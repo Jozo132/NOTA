@@ -2,23 +2,32 @@
 
 #include <Arduino.h>
 #include "./MD5.h"
-#include "./utility/stm32_flash_boot.h"
 
-#if defined(ESP8266) || defined(ESP32)
+#if defined(ESP8266) || defined(ESP32) || defined(ARDUINO_ARCH_ESP8266) || defined(ARDUINO_ARCH_ESP32)
+#ifndef ESP
 #define ESP
+#endif // ESP
+#elif defined(STM32) || defined(ARDUINO_ARCH_STM32)
+#ifndef ARDUINO_ARCH_STM32
+#define ARDUINO_ARCH_STM32
+#endif // ARDUINO_ARCH_STM32
+#include "./utility/internal_flash.h"
+#else // UNKOWN PLATFORM
+#error "Unknown platform"
 #endif
 
+
 // ESP8266
-#if defined(ESP8266)
+#if defined(ESP8266) || defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 // ESP32
-#elif defined(ESP32)
+#elif defined(ESP32) || defined(ARDUINO_ARCH_ESP32)
 #include <WiFi.h>
 #include "Update.h"
 #include <WiFiUdp.h>
-// STM32
-#elif defined(STM32)
+// ARDUINO_ARCH_STM32
+#elif defined(ARDUINO_ARCH_STM32)
 // Use the Ethernet library for STM32 with ArduinoOTA
 #include <Ethernet.h>
 
@@ -49,9 +58,6 @@
 #define ENV(x) __XENV(x)
 #endif /* ENV */
 
-#include <functional>
-
-class UdpContext;
 
 typedef enum {
     OTA_IDLE,
@@ -122,11 +128,11 @@ public:
     int getCommand();
 
 private:
-    void listener(void);
-    void ota_handle_idle(void);
-    void ota_handle_auth(void);
-    void ota_handle_update(void);
-    int parseInt(void);
+    void listener();
+    void ota_handle_idle();
+    void ota_handle_auth();
+    void ota_handle_update();
+    int parseInt();
     String readStringUntil(char end);
 
     long _last_auth_time;
@@ -135,7 +141,7 @@ private:
     String _password;
     String _hostname;
     String _nonce;
-#ifdef STM32
+#ifdef ARDUINO_ARCH_STM32
     EthernetServer* _tcp_ota = nullptr;
     EthernetClient* ota_client = nullptr;
 #else
@@ -202,7 +208,7 @@ extern "C" {
 #include "MD5Builder.h"
 #include "Update.h"
 
-#elif defined(STM32)
+#elif defined(ARDUINO_ARCH_STM32)
 #include <functional>
 #include <Ethernet.h>
 //#include <ArduinoOTA.h>
@@ -269,27 +275,27 @@ void NOTAClass::begin() {
     if (!_port) _port = 8266;
 #elif defined(ESP32)
     if (!_port) _port = 3232;
-#elif defined(STM32)
+#elif defined(ARDUINO_ARCH_STM32)
     if (!_port) _port = 3232;
 #endif
     if (_tcp_ota) {
         delete _tcp_ota;
         _tcp_ota = 0;
     }
-#ifdef STM32
+#ifdef ARDUINO_ARCH_STM32
     _tcp_ota = new EthernetServer(_port);
     _tcp_ota->begin();
 #else
     _tcp_ota = new WiFiServer(_port);
     _tcp_ota->begin(_port);
 #endif
-#if !defined(STM32) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
+#if !defined(ARDUINO_ARCH_STM32) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
     MDNS.begin(_hostname.c_str());
     MDNS.enableArduino(_port, _password.length() > 0);
 #endif
     _initialized = true;
     _state = OTA_IDLE;
-#ifdef STM32
+#ifdef ARDUINO_ARCH_STM32
     Serial.printf("OTA server at port %u\n", _port);
 #else
     Serial.printf("OTA server at: %s.local:%u\n", _hostname.c_str(), _port);
@@ -418,7 +424,7 @@ void NOTAClass::ota_handle_auth() {
 void NOTAClass::ota_handle_update() {
 #ifdef ESP
     if (!Update.begin(_size, _cmd)) {
-#elif defined(STM32) // Using ArduinoOTA with NO_OTA_NETWORK -> InternalStorage
+#elif defined(ARDUINO_ARCH_STM32) // Using ArduinoOTA with NO_OTA_NETWORK -> InternalStorage
     int ota_open_error = InternalStorage.open(_size);
     if (ota_open_error > 0) {
 #endif
@@ -455,10 +461,10 @@ void NOTAClass::ota_handle_update() {
         while (ota_client->available()) ota_client->read();
         _state = OTA_IDLE;
         return;
-    }
+}
     while (ota_client->available()) ota_client->read();
     Serial.println("OTA Update started");
-    
+
     if (_request_callback) _request_callback();
     if (_start_callback) _start_callback();
     // Serial.printf("Sketch start address: 0x%08X\n", FLASH_BASE + InternalStorage.SKETCH_START_ADDRESS);
@@ -555,7 +561,7 @@ void NOTAClass::ota_handle_update() {
     if (valid && _state == OTA_RUNUPDATE && total == _size) {
 #endif
         Serial.printf("Update Success: %u\n", total);
-        
+
         if (_end_callback) _end_callback();
 
         delay(10);
@@ -571,7 +577,7 @@ void NOTAClass::ota_handle_update() {
         ota_client->stop();
         delay(100);
         Serial.printf("Update Success\n");
-#ifdef STM32
+#ifdef ARDUINO_ARCH_STM32
         InternalStorage.apply();
 #endif
         if (_rebootOnSuccess) {
@@ -622,7 +628,7 @@ void NOTAClass::listener() {
 #ifdef ESP
     Serial.printf("Client with IP %s connected\n", client.remoteIP().toString().c_str());
 #else 
-    auto ip = client.remoteIP();
+    IPAddress ip = client.remoteIP();
     Serial.printf("Client with IP %d.%d.%d.%d connected\n", ip[0], ip[1], ip[2], ip[3]);
 #endif
     if (_state == OTA_IDLE) ota_handle_idle();
