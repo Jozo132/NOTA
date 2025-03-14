@@ -6,7 +6,7 @@
 # Datatypes (KEYWORD1)
 #######################################
 
-ArduinoOTA	KEYWORD1
+NOTA	KEYWORD1
 
 #######################################
 # Methods and Functions (KEYWORD2)
