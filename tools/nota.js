@@ -27,8 +27,9 @@
     "use strict"
 
     /** @param { Error } e */
-    const throw_error = e => {
+    const throw_error = async e => {
         console.error('    ' + e.message);
+        await delay(5000);
         process.exit(1)
     }
     process.on('uncaughtException', throw_error)
@@ -37,10 +38,15 @@
     const net = require('net')
     const fs = require('fs')
     const crypto = require('crypto')
+    /** @param { string | Buffer } data */
     const md5 = data => crypto.createHash('md5').update(typeof data === 'string' ? Buffer.from(data) : data).digest("hex")
+    /** @param { number } ms */
     const delay = ms => new Promise(r => setTimeout(r, ms))
+    /** @param { boolean } used */
     const timestamp = used => !used ? '' : `[${new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '')}]: `
+    /** @param { any[] } args */
     const print = (...args) => process.stdout.write(args.filter(x => x !== undefined).join(' '))
+    /** @param { any[] } args */
     const println = (...args) => print(...args, '\r\n')
 
 
@@ -54,27 +60,42 @@
     const FLASH = 0
     const SPIFFS = 100
     const AUTH = 200
+    const TEST = 201
     const total_bars = 40
+
+    const supported_versions = ['0.0.2']
 
     // Parse command line arguments
     const argv_raw = process.argv.slice(2)
+    /** @type { Record<string, any> } */
     const argv = {}
     for (let i = 0; i < argv_raw.length; i++) {
         if (argv_raw[i]) {
-            if (argv_raw[i].startsWith('--')) {
-                const e_index = argv_raw[i].indexOf('=')
-                const [key, value] = e_index > 0 ? [argv_raw[i].substring(0, e_index), argv_raw[i].substring(e_index + 1)] : [argv_raw[i], true]
-                argv[key.substring(2)] = value
+            if (argv_raw[i].startsWith('--')) { // parse: `--key value` or `--key` or `--key=value`
+                const arg = argv_raw[i].substring(2)
+                if (arg.includes('=')) {
+                    const parts = arg.split('=')
+                    const key = parts.shift() || ''
+                    argv[key.toLowerCase()] = parts.join('=')
+                } else if (argv_raw[i + 1] && !argv_raw[i + 1].startsWith('-')) {
+                    const key = arg
+                    argv[key.toLowerCase()] = argv_raw[++i]
+                } else {
+                    const key = arg
+                    argv[key.toLowerCase()] = true
+                }
             } else if (argv_raw[i] && argv_raw[i].startsWith('-') && (argv_raw[i + 1] || '').startsWith('-')) {
                 const key = argv_raw[i].substring(1)
-                argv[key] = true
+                argv[key.toLowerCase()] = true
             } else if (argv_raw[i] && argv_raw[i].startsWith('-')) {
                 const key = argv_raw[i].substring(1)
-                argv[key] = argv_raw[++i]
+                argv[key.toLowerCase()] = argv_raw[++i]
             }
         }
     }
 
+    const device_name_raw = argv.n || argv.name || ''
+    const device_name = typeof device_name_raw === 'string' ? device_name_raw.trim() : ''
     const host = argv.i || argv.ip || ''
     const port = argv.p || argv.port || DEFAULT_PORT
     const auth = argv.a || argv.auth || ''
@@ -82,17 +103,21 @@
     const command = (argv.s || argv.spiffs || false) ? SPIFFS : FLASH
     const debug = !!(argv.d || argv.debug || false)
     const ts = !!(argv.t || argv.timestamp || false)
+    const force = argv.force || false
+    const test = argv.test || false
+
+    const upload = !test
 
     if (!host) throw new Error('Missing parameter [-i] / [--ip] for the target IP address.')
-    if (!image) throw new Error('Missing parameter [-f] / [--file] for the binary image file.')
-    if (!fs.existsSync(image)) throw new Error(`File ${JSON.stringify(image)} does not exist.`)
+    if (upload && !image) throw new Error('Missing parameter [-f] / [--file] for the binary image file.')
+    if (upload && !fs.existsSync(image)) throw new Error(`File ${JSON.stringify(image)} does not exist.`)
 
     /** 
      * @param { { host: String, port: Number, debug?: Boolean} } remote_address
      * @returns { Promise<{ 
      *      socket: net.Socket, 
      *      setTimeout: (ms: Number) => void, 
-     *      write: (data: Buffer | String) => Promise,
+     *      write: (data: Buffer | String) => Promise<void>,
      *      read: (size?: Number) => String,
      *      readUntil: (delimiter: String) => String,
      *      peek: (size?: Number) => String,
@@ -100,7 +125,7 @@
      *      readAll: () => String,
      *      close: () => void,
      *      end: () => void,
-     *      doAwait: (size?: Number) => Promise,
+     *      doAwait: (size?: Number) => Promise<void>,
      *      available: () => Number,
      * }> }
     */
@@ -109,7 +134,9 @@
         let data = ''
         const connection = {
             socket: c,
+            /** @param { number } ms */
             setTimeout: ms => c.setTimeout(ms),
+            /** @param { string | Buffer } data */
             write: data => new Promise((res, rej) => {
                 c.write(typeof data === 'string' ? Buffer.from(data) : data, e => e ? rej(e) : res(1))
                 if (debug) println(`${timestamp(ts)}> TO ${host}:${port} ${JSON.stringify(data + '')}`)
@@ -119,7 +146,7 @@
                 data = data.substring(size)
                 return output
             },
-            readUntil: delimiter => {
+            readUntil: (delimiter = '\n') => {
                 const index = data.indexOf(delimiter)
                 if (index === -1) {
                     const output = data
@@ -164,15 +191,16 @@
         c.connect(port, host)
     })
 
-    const connect = async (message) => {
+    const connect = async (message = '') => {
+        if (!message) throw new Error('No message to send.')
         let sock = undefined
         let con_retries = 0, connected = false
         for (; con_retries < 10 && !connected;) {
             if (con_retries === 1) { print(`${timestamp(ts)}Retrying...`) }
             if (con_retries > 1) print('.')
             try {
-                sock = await socket_connect({ host, port, debug }) // Create a TCP/IP client socket connection
-            } catch (e) { throw new Error(e.message) }
+                sock = await socket_connect({ host, port, debug }) // @ts-ignore // Create a TCP/IP client socket connection
+            } catch (e) { throw new Error(e && e.message) }
             try {
                 sock.setTimeout(100)
                 await sock.write(message)
@@ -188,7 +216,7 @@
         if (!sock) throw new Error(`Failed to connect to ${host}:${port}`)
         return sock
     }
-
+    /** @param { any } sock */
     const verify = sock => new Promise(async (resolve, reject) => {
         try {
             print(`${timestamp(ts)}Verifying...`)
@@ -217,15 +245,16 @@
     try {
         const time_start = +new Date
         let filename = image
-        if (fs.existsSync(filename + '.signed')) { // Check whether Signed Update is used.
+        if (upload && fs.existsSync(filename + '.signed')) { // Check whether Signed Update is used.
             filename = filename + '.signed'
             println(`${timestamp(ts)}Detected Signed Update. "${filename}" will be uploaded instead.`)
         }
-        if (filename.endsWith('.elf')){
+        if (upload && filename.endsWith('.elf')) {
             // Convert ELF to BIN
             const { exec } = require('child_process')
+            /** @param { string } cmd */
             const exec_promise = (cmd) => new Promise((resolve, reject) => exec(cmd, (err, stdout, stderr) => err ? reject(err) : resolve(stdout)))
-            
+
             const binfile = filename.replace('.elf', '.bin')
             // arm-none-eabi-objcopy -O binary firmware.elf firmware.bin
             const cmd = `arm-none-eabi-objcopy -O binary ${filename} ${binfile}`
@@ -233,24 +262,51 @@
             await exec_promise(cmd)
             filename = binfile
         }
-        const file_content = fs.readFileSync(filename, { encoding: null})
+        const file_content = upload && fs.readFileSync(filename, { encoding: null }) || Buffer.from('')
         const content_size = file_content.length
         const file_md5 = await md5(file_content)
-        println(`${timestamp(ts)}Sending OTA ${command === SPIFFS ? 'SPIFFS' : 'Flash'} update request to ${host}:${port}`)
+        if (upload) println(`${timestamp(ts)}Sending OTA ${command === SPIFFS ? 'SPIFFS' : 'Flash'} update request to ${host}:${port}`)
+        else println(`${timestamp(ts)}Testing OTA ${command === SPIFFS ? 'SPIFFS' : 'Flash'} on ${host}:${port}`)
         const message = `${command} ${content_size} ${file_md5}\n`
         const sock = await connect(message)
         const res_update = sock.readAll()
         if (!res_update) throw new Error(`No Answer from ${host}:${port}`)
-        if (res_update.startsWith('AUTH')) {
+        const res_parts = res_update.split(' ')
+        const response = res_parts.shift() || '' // 'AUTH' or 'OK'
+        const nonce = response === 'AUTH' ? res_parts.shift() || '' : '' // required for authentication
+        const meta = res_parts.join(' ')
+        const meta_parts = meta.includes('|/') ? meta.split('|/') : res_parts
+        const version = meta_parts.shift() || '' // NOTA version (e.g. "1.1")
+        const dev_name = meta_parts.shift() || '' // device name (e.g. "esp8266-012345")
+        const dev_platform = meta_parts.shift() || '' // device platform (e.g. "ESP8266" or "STM32F4")
+        const full_name = dev_name + (dev_platform ? ` [${dev_platform}]` : '')
+        if (version && !supported_versions.includes(version)) {
+            if (!force) throw new Error(`Incompatible NOTA version ${JSON.stringify(version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Use [--force] to override.`)
+            else println(`${timestamp(ts)}Warning: Incompatible NOTA version ${JSON.stringify(version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Continuing due to [--force].`)
+        }
+        if (version) {
+            println(`${timestamp(ts)}Found ${full_name} with NOTA v${version}`)
+        } else {
+            println(`${timestamp(ts)}Info: Target device ${JSON.stringify(full_name)} is using an old NOTA version.`)
+        }
+        if (dev_name && dev_name !== device_name) {
+            if (!device_name) {
+                if (!force) throw new Error(`Target device name ${JSON.stringify(dev_name)} received, but no expected name provided. Use [-n] / [--name] to set the expected name or use [--force] to override.`)
+                else println(`${timestamp(ts)}Warning: Target device name ${JSON.stringify(dev_name)} received, but no expected name provided. Continuing due to [--force].`)
+            } else {
+                if (!force) throw new Error(`Target device name ${JSON.stringify(dev_name)} does not match the expected name ${JSON.stringify(device_name)}. Use [--force] to override.`)
+                else println(`${timestamp(ts)}Warning: Target device name ${JSON.stringify(dev_name)} does not match the expected name ${JSON.stringify(device_name)}. Continuing due to [--force].`)
+            }
+        }
+        if (response === 'AUTH') {
             if (!auth || auth === true) throw new Error(`Target requires authentication. Please provide the password with [-a] / [--auth]`)
-            const nonce = res_update.split(' ')[1]
             const cnonce_text = `${filename}${content_size}${file_md5}${host}`
             const cnonce = md5(cnonce_text)
             const passmd5 = md5(auth)
             const challenge_text = `${passmd5}:${nonce}:${cnonce}`
             const challenge = md5(challenge_text)
             print(`${timestamp(ts)}Authenticating...`)
-            await sock.write(`${AUTH} ${cnonce} ${challenge}\n`)
+            await sock.write(`${upload ? AUTH : TEST} ${cnonce} ${challenge}\n`)
             await sock.doAwait()
             const res_auth = sock.readAll()
             if (!res_auth) {
@@ -262,11 +318,15 @@
                 throw new Error(res_auth)
             }
             println(' done!')
-        } else if (res_update !== 'OK') {
+        } else if (response !== 'OK') {
             throw new Error(`Bad invitation response: ${JSON.stringify(res_update)}`)
         } else {
             await delay(200)
             sock.readAll() // OK, we're good to go. Clean up the socket and start the update.
+        }
+        if (test) {
+            throw new Error(`${timestamp(ts)}Test successful. Exiting due to [--test].`)
+
         }
         const upload_start = +new Date
         let offset = 0
@@ -304,7 +364,7 @@
         const reply = sock.readAll()
         if (!reply.includes('OK')) throw new Error(`Problem while uploading: ${JSON.stringify(reply)}`)
         println(`${timestamp(ts)}OTA update finished in ${((+new Date - time_start) / 1000).toFixed(2)} seconds.`)
-        sock.end()
-    } catch (e) { throw_error(e) }
+        sock.end() // @ts-ignore
+    } catch (e) { await throw_error(e) }
     process.exit(0)
 })()

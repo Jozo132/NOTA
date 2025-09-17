@@ -51,6 +51,7 @@
 #define U_FS      100
 #define U_SPIFFS  100
 #define U_AUTH    200
+#define U_TEST    201
 #endif
 
 #ifndef ENV
@@ -58,6 +59,9 @@
 #define ENV(x) __XENV(x)
 #endif /* ENV */
 
+#define NOTA_VERSION "0.0.2"
+
+static char ota_temp[128];
 
 typedef enum {
     OTA_IDLE,
@@ -93,6 +97,10 @@ public:
     //Sets the device hostname. Default esp8266-xxxxxx
     void setHostname(const char* hostname);
     String getHostname();
+
+    //Sets the platform name. Default "Unknown"
+    void setPlatform(const char* platform);
+    String getPlatform();
 
     //Sets the password that will be required for OTA. Default NULL
     void setPassword(const char* password);
@@ -140,6 +148,7 @@ private:
     int _port = 0;
     String _password;
     String _hostname;
+    String _platform = "Unknown";
     String _nonce;
 #ifdef ARDUINO_ARCH_STM32
     EthernetServer* _tcp_ota = nullptr;
@@ -249,6 +258,8 @@ void NOTAClass::setPort(uint16_t port) { if (!_initialized && !_port && port) _p
 // void NOTAClass::setStorage(MyFileStorageClass& storage) { if (!_initialized) this->storage = &storage; }
 void NOTAClass::setHostname(const char* hostname) { if (!_initialized && !_hostname.length() && hostname) _hostname = hostname; }
 String NOTAClass::getHostname() { return _hostname; }
+void NOTAClass::setPlatform(const char* platform) { if (!_initialized && platform) _platform = platform; }
+String NOTAClass::getPlatform() { return _platform; }
 void NOTAClass::setPassword(const char* password) {
     if (!_initialized && !_password.length() && password) {
         _password = MD5(password);
@@ -261,15 +272,14 @@ void NOTAClass::setRebootOnSuccess(bool reboot) { _rebootOnSuccess = reboot; }
 void NOTAClass::begin() {
     if (_initialized) return;
     if (!_hostname.length()) {
-        char tmp[20] = "";
 #if defined(ESP8266)
-        sprintf(tmp, "esp8266-%06x", ESP.getChipId());
+        sprintf(ota_temp, "esp8266-%06x", ESP.getChipId());
 #elif defined(ESP32) 
         uint8_t mac[6];
         WiFi.macAddress(mac);
-        sprintf(tmp, "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        sprintf(ota_temp, "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 #endif
-        _hostname = tmp;
+        _hostname = ota_temp;
     }
 #if defined(ESP8266)
     if (!_port) _port = 8266;
@@ -304,7 +314,6 @@ void NOTAClass::begin() {
 
 int NOTAClass::parseInt() {
     if (!ota_client) return 0;
-    char data[16];
     int i = 0;
     uint8_t index = 0;
     char value;
@@ -314,11 +323,12 @@ int NOTAClass::parseInt() {
         i++;
         value = ota_client->read();
         if (value == '\n' || value == '\r') {
-            data[index] = 0;
+            ota_temp[index] = 0;
             done = true;
-        } else data[index++] = value;
+        } else ota_temp[index++] = value;
     }
-    return atoi(data);
+    ota_temp[index] = 0;
+    return atoi(ota_temp);
 }
 
 String NOTAClass::readStringUntil(char end) {
@@ -359,20 +369,25 @@ void NOTAClass::ota_handle_idle() {
     _program_hash_.trim();
     while (ota_client->available()) ota_client->read();
     Serial.printf("%s\n", _program_hash_.c_str());
+    bool error = false;
     if (_program_hash_.length() != 32) {
         Serial.println("Invalid MD5 hash length");
+        _state = OTA_IDLE;
+        sprintf(ota_temp, "ERR:HASH %s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str());
+        ota_client->write((const char*) ota_temp, strlen(ota_temp));
+        error = true;
     } else if (_password.length()) {
         _nonce = MD5(micros());
-        char auth_req[38];
-        sprintf(auth_req, "AUTH %s", _nonce.c_str());
+        sprintf(ota_temp, "AUTH %s %s|/%s|/%s", _nonce.c_str(), NOTA_VERSION, _hostname.c_str(), _platform.c_str());
         // Serial.printf("Requesting OTA authentication: %s\n", auth_req);
-        ota_client->write((const char*) auth_req, strlen(auth_req));
+        ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
         _state = OTA_WAITAUTH;
         _last_auth_time = millis();
     } else {
         Serial.println("Authentication OK");
-        ota_client->write("OK", 2);
+        sprintf(ota_temp, "OK %s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str());
+        ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
         _state = OTA_RUNUPDATE;
         _last_update_time = millis();
@@ -381,8 +396,15 @@ void NOTAClass::ota_handle_idle() {
 
 void NOTAClass::ota_handle_auth() {
     int cmd = this->parseInt();
-    if (cmd != U_AUTH) {
+    if (cmd != U_AUTH && cmd != U_TEST) {
         Serial.printf("Authentication failed: Wrong command \"%d\"\n", cmd);
+        ota_client->write("ERR:CMD", 7);
+        _state = OTA_IDLE;
+        return;
+    }
+    if (cmd == U_AUTH && _size <= 0) {
+        Serial.printf("Authentication failed: Invalid size %d\n", _size);
+        ota_client->write("ERR:SIZE", 8);
         _state = OTA_IDLE;
         return;
     }
@@ -396,6 +418,7 @@ void NOTAClass::ota_handle_auth() {
     Serial.printf(".");
     if (cnonce.length() != 32 || response.length() != 32) {
         Serial.printf(" failed: Invalid key length\n");
+        ota_client->write("ERR:KEY", 7);
         _state = OTA_IDLE;
         return;
     }
@@ -406,13 +429,21 @@ void NOTAClass::ota_handle_auth() {
     Serial.printf(".");
     if (result.equals(response)) {
         Serial.println(" OK");
-        _state = OTA_RUNUPDATE;
-        _last_update_time = millis();
+        if (cmd == U_TEST) {
+            _state = OTA_IDLE;
+            delay(100);
+            ota_client->write("OK", 2);
+            delay(100);
+            while (ota_client->available()) ota_client->read();
+        } else { // Run update
+            _state = OTA_RUNUPDATE;
+            _last_update_time = millis();
+        }
         return;
     } else {
         Serial.printf(" failed - wrong nonce - expected \"%s\" but got \"%s\"\n", result.c_str(), response.c_str());
-        ota_client->write("permission denied", 18);
-        delay(10);
+        ota_client->write("ERR:AUTH", 9);
+        delay(100);
         if (_error_callback) _error_callback(OTA_AUTH_ERROR);
         _state = OTA_IDLE;
     }
@@ -437,8 +468,8 @@ void NOTAClass::ota_handle_update() {
         String ss = Update.errorString();
 #else
         int32_t max_size = InternalStorage.maxSize();
-        char temp[128];
-        sprintf(temp, "Unable to open InternalStorage with size %d, max size is %d", _size, max_size);
+
+        sprintf(ota_temp, "Unable to open InternalStorage with size %d, max size is %d", _size, max_size);
         switch (ota_open_error) {
             case 1: Serial.println("(1) Size overflow"); break;
             case 2: Serial.println("(2) HAL_FLASH_Unlock problem"); break;
@@ -446,7 +477,7 @@ void NOTAClass::ota_handle_update() {
             case 4: Serial.println("(4) SectorError problem"); break;
             default: Serial.printf("(%d) Unknown error code\n", ota_open_error); break;
         }
-        String ss = temp;
+        String ss = ota_temp;
 #endif
         // Remove the trailing newline character from the error string
         bool done = false;
@@ -602,7 +633,7 @@ void NOTAClass::ota_handle_update() {
     }
     _state = OTA_IDLE;
     while (ota_client->available()) ota_client->read();
-}
+    }
 
 
 void NOTAClass::listener() {
