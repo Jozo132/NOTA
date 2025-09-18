@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "./MD5.h"
+#include <stdarg.h>
 
 #if defined(ESP8266) || defined(ESP32) || defined(ARDUINO_ARCH_ESP8266) || defined(ARDUINO_ARCH_ESP32)
 #ifndef ESP
@@ -77,12 +78,17 @@ typedef enum {
     OTA_END_ERROR
 } ota_error_t;
 
+
+
 class NOTAClass {
 public:
     typedef std::function<void(void)> THandlerFunction;
     typedef std::function<void(ota_error_t)> THandlerFunction_Error;
     typedef std::function<void(unsigned int, unsigned int)> THandlerFunction_Progress;
+    typedef std::function<void(const char*)> TLogFunction_Out;
 
+    // void setLogger(TLogFunction_Out fn);
+    // void logf(const char* fmt, ...);
     // MyFileStorageClass *storage = nullptr;
 
     NOTAClass();
@@ -140,9 +146,13 @@ private:
     void ota_handle_idle();
     void ota_handle_auth();
     void ota_handle_update();
+#ifdef NOTA_BROADCAST
+    void handle_broadcast();
+#endif
     int parseInt();
     String readStringUntil(char end);
 
+    TLogFunction_Out _logger = nullptr;
     long _last_auth_time;
     long _last_update_time;
     int _port = 0;
@@ -224,6 +234,34 @@ extern "C" {
 
 #endif
 
+#ifdef NOTA_BROADCAST
+#define NOTA_BC_MAGIC           "NOTA_DISCOVERY"
+#define NOTA_BC_DISCOVERY_GROUP IPAddress(239, 255, 0, 1)
+#define NOTA_BC_DISCOVERY_PORT  41234
+#define NOTA_BC_RESPONSE_PORT   41235
+
+#if defined(ARDUINO_ARCH_STM32)
+#include <EthernetUdp.h>
+static EthernetUDP udp_mc; // Multicast UDP
+static EthernetUDP udp_b;  // Broadcast UDP
+#else
+#include <WiFiUdp.h>
+static WiFiUDP udp_mc; // Multicast UDP
+static WiFiUDP udp_b;  // Broadcast UDP
+#endif
+
+static void macToString(const uint8_t mac[6], char* out) {
+    sprintf(out, "%02X:%02X:%02X:%02X:%02X:%02X",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+static void ipToString(IPAddress ip, char* out) {
+    sprintf(out, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+static void buildDeviceId(const uint8_t mac[6], char* out, const char* prefix) {
+    sprintf(out, "%s-%02x%02x%02x", prefix, mac[3], mac[4], mac[5]);
+}
+#endif // NOTA_BROADCAST
+
 #define OTA_DEBUG Serial
 
 char reusable_hash[128];
@@ -248,6 +286,17 @@ NOTAClass::~NOTAClass() {
         _tcp_ota = 0;
     }
 }
+
+// void NOTAClass::setLogger(TLogFunction_Out fn) { _logger = fn; }
+
+// void NOTAClass::logf(const char* fmt, ...) {
+//     if (!_logger) return;
+//     char buf[256];
+//     va_list ap; va_start(ap, fmt);
+//     vsnprintf(buf, sizeof(buf), fmt, ap);
+//     va_end(ap);
+//     _logger(buf);
+// }
 
 void NOTAClass::onRequest(THandlerFunction fn) { _request_callback = fn; }
 void NOTAClass::onStart(THandlerFunction fn) { _start_callback = fn; }
@@ -278,7 +327,7 @@ void NOTAClass::begin() {
         uint8_t mac[6];
         WiFi.macAddress(mac);
         sprintf(ota_temp, "esp32-%02x%02x%02x%02x%02x%02x", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-#endif
+#endif // ESP32
         _hostname = ota_temp;
     }
 #if defined(ESP8266)
@@ -287,7 +336,7 @@ void NOTAClass::begin() {
     if (!_port) _port = 3232;
 #elif defined(ARDUINO_ARCH_STM32)
     if (!_port) _port = 3232;
-#endif
+#endif // ARDUINO_ARCH_STM32
     if (_tcp_ota) {
         delete _tcp_ota;
         _tcp_ota = 0;
@@ -295,21 +344,38 @@ void NOTAClass::begin() {
 #ifdef ARDUINO_ARCH_STM32
     _tcp_ota = new EthernetServer(_port);
     _tcp_ota->begin();
-#else
+#else // ESP8266/ESP32
     _tcp_ota = new WiFiServer(_port);
     _tcp_ota->begin(_port);
-#endif
+#endif // ARDUINO_ARCH_STM32
 #if !defined(ARDUINO_ARCH_STM32) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
     MDNS.begin(_hostname.c_str());
     MDNS.enableArduino(_port, _password.length() > 0);
-#endif
+#endif // ARDUINO_ARCH_STM32
     _initialized = true;
     _state = OTA_IDLE;
 #ifdef ARDUINO_ARCH_STM32
     Serial.printf("OTA server at port %u\n", _port);
-#else
+#else // ESP8266/ESP32
     Serial.printf("OTA server at: %s.local:%u\n", _hostname.c_str(), _port);
+#endif // ARDUINO_ARCH_STM32
+#ifdef NOTA_BROADCAST
+#if defined(ARDUINO_ARCH_STM32)
+    bool mc_ok = udp_mc.beginMulticast(NOTA_BC_DISCOVERY_GROUP, NOTA_BC_DISCOVERY_PORT) == 1;
+    bool b_ok = udp_b.begin(NOTA_BC_DISCOVERY_PORT) == 1;
+    Serial.printf("OTA multicast discovery %s on %u\n", mc_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    // logf("OTA multicast discovery %s on %u\n", mc_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    Serial.printf("OTA broadcast discovery %s on %u\n", b_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    // logf("OTA broadcast discovery %s on %u\n", b_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+#else
+    bool mc_ok = udp_mc.beginMulticast(WiFi.localIP(), NOTA_BC_DISCOVERY_GROUP, NOTA_BC_DISCOVERY_PORT);
+    bool b_ok = udp_b.begin(NOTA_BC_DISCOVERY_PORT);
+    Serial.printf("OTA multicast discovery %s on %u\n", mc_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    // logf("OTA multicast discovery %s on %u\n", mc_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    Serial.printf("OTA broadcast discovery %s on %u\n", b_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
+    // logf("OTA broadcast discovery %s on %u\n", b_ok ? "started" : "failed", NOTA_BC_DISCOVERY_PORT);
 #endif
+#endif // NOTA_BROADCAST
 }
 
 int NOTAClass::parseInt() {
@@ -635,6 +701,95 @@ void NOTAClass::ota_handle_update() {
     while (ota_client->available()) ota_client->read();
     }
 
+#ifdef NOTA_BROADCAST
+void NOTAClass::handle_broadcast() {
+    // Check both multicast and broadcast UDP sockets
+    for (int i = 0; i < 2; ++i) {
+        auto& udp = (i == 0) ? udp_mc : udp_b;
+        int packetSize = udp.parsePacket();
+        if (packetSize <= 0) continue;
+
+        // logf("Broadcast packet received, size: %d\n", packetSize);
+
+        char inBuf[512];
+        int len = udp.read((uint8_t*) inBuf, sizeof(inBuf) - 1);
+        if (len <= 0) {
+            // logf("Broadcast read error: %d\n", len); 
+            continue;
+        }
+        inBuf[len] = '\0';
+
+        // Minimal check for discovery request
+        if (!strstr(inBuf, "\"m\"") || !strstr(inBuf, NOTA_BC_MAGIC) ||
+            !strstr(inBuf, "\"t\"") || !strstr(inBuf, "disc_req")) {
+            // logf("Ignoring non DISC_REQ broadcast");
+            continue;
+        }
+
+        // Optional: extract nonce
+        char nonce[32] = { 0 };
+        const char* key = "\"nonce\":\"";
+        char* p = strstr(inBuf, key);
+        if (p) {
+            p += strlen(key);
+            size_t j = 0;
+            while (*p && *p != '"' && j < sizeof(nonce) - 1) nonce[j++] = *p++;
+            nonce[j] = '\0';
+        }
+
+        // Gather identifiers
+        uint8_t mac[6] = { 0 };
+#if defined(ARDUINO_ARCH_STM32)
+        Ethernet.MACAddress(mac);
+        IPAddress ip = Ethernet.localIP();
+#elif defined(ESP32) || defined(ESP8266)
+        WiFi.macAddress(mac);
+        IPAddress ip = WiFi.localIP();
+#endif
+        const char* prefix = this->_platform.c_str();
+
+        char macStr[18]; macToString(mac, macStr);
+        char ipStr[16];  ipToString(ip, ipStr);
+
+        char nameBuf[64];
+        if (_hostname.length()) {
+            strncpy(nameBuf, _hostname.c_str(), sizeof(nameBuf) - 1);
+            nameBuf[sizeof(nameBuf) - 1] = '\0';
+        } else {
+            buildDeviceId(mac, nameBuf, prefix);
+        }
+
+        // Compose JSON response (includes platform, hostname, ota_port, NOTA version)
+        char out[1024];
+        int n = snprintf(out, sizeof(out),
+            "{\"m\":\"%s\",\"t\":\"disc_res\",\"nonce\":\"%s\","\
+            "\"name\":\"%s\",\"platform\":\"%s\","\
+            "\"mac\":\"%s\",\"ip\":\"%s\",\"ota_port\":%u,\"nota\":\"%s\",\"uptime_ms\":%lu,"\
+            "\"hostname\":\"%s\"}",
+            NOTA_BC_MAGIC, nonce,
+            nameBuf, _platform.c_str(),
+            macStr, ipStr, (unsigned) _port, NOTA_VERSION, (unsigned long) millis(),
+            _hostname.c_str()
+        );
+        if (n <= 0) {
+            // logf("Broadcast response encoding error: %d\n", n); 
+            continue;
+        }
+        if (n >= (int) sizeof(out)) {
+            // logf("Broadcast response truncated: %d\n", n); 
+            continue;
+        }
+
+        IPAddress serverIP = udp.remoteIP();
+        udp.beginPacket(serverIP, NOTA_BC_RESPONSE_PORT);
+        udp.write((const uint8_t*) out, (size_t) n);
+        udp.endPacket();
+
+        // logf("Broadcast DISC_REQ from %u.%u.%u.%u responded\n", serverIP[0], serverIP[1], serverIP[2], serverIP[3]);
+    }
+}
+#endif // NOTA_BROADCAST
+
 
 void NOTAClass::listener() {
     // Check if server is started
@@ -675,6 +830,9 @@ void NOTAClass::handle() {
 
 #if defined(ESP8266) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
     MDNS.update(); //handle MDNS update as well, given that OTA_TCP relies on it anyways
+#endif
+#ifdef NOTA_BROADCAST
+    handle_broadcast();
 #endif
 }
 
