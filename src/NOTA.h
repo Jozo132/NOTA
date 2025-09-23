@@ -135,7 +135,10 @@ public:
     //Starts the ArduinoOTA service
     void begin();
 
-    //Call this in loop() to run the service. Also calls MDNS.update() when begin() or begin(true) is used.
+    //Run this when network is reset and the listeners need to be reconnected
+    void reconnect();
+
+    //Call this in loop() regularly
     void handle();
 
     //Gets update command type after OTA has started. Either U_FLASH or U_FS
@@ -196,9 +199,6 @@ extern NOTAClass OTA;
 
 #include "NOTA.h"
 
-
-#define USE_GLOBAL_MDNS
-
 #if defined(ESP8266)
 #include <functional>
 #include "MD5Builder.h"
@@ -215,15 +215,9 @@ extern "C" {
 #include "lwip/igmp.h"
 #include "lwip/mem.h"
 
-
-#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
-#include <ESP8266mDNS.h>
-#endif
-
 #elif defined(ESP32)
 #include <functional>
 #include <WiFiUdp.h>
-#include "ESPmDNS.h"
 #include "MD5Builder.h"
 #include "Update.h"
 
@@ -305,7 +299,7 @@ void NOTAClass::onProgress(THandlerFunction_Progress fn) { _progress_callback = 
 void NOTAClass::onError(THandlerFunction_Error fn) { _error_callback = fn; }
 void NOTAClass::setPort(uint16_t port) { if (!_initialized && !_port && port) _port = port; }
 // void NOTAClass::setStorage(MyFileStorageClass& storage) { if (!_initialized) this->storage = &storage; }
-void NOTAClass::setHostname(const char* hostname) { if (!_initialized && !_hostname.length() && hostname) _hostname = hostname; }
+void NOTAClass::setHostname(const char* hostname) { if (!_initialized && hostname) _hostname = hostname; }
 String NOTAClass::getHostname() { return _hostname; }
 void NOTAClass::setPlatform(const char* platform) { if (!_initialized && platform) _platform = platform; }
 String NOTAClass::getPlatform() { return _platform; }
@@ -313,6 +307,11 @@ void NOTAClass::setPassword(const char* password) {
     if (!_initialized && !_password.length() && password) {
         _password = MD5(password);
     }
+}
+
+void NOTAClass::reconnect() {
+    this->_initialized = false; // Reset initialization state
+    this->begin();
 }
 
 void NOTAClass::setPasswordHash(const char* password) { if (!_initialized && !_password.length() && password) _password = password; }
@@ -330,13 +329,7 @@ void NOTAClass::begin() {
 #endif // ESP32
         _hostname = ota_temp;
     }
-#if defined(ESP8266)
-    if (!_port) _port = 8266;
-#elif defined(ESP32)
     if (!_port) _port = 3232;
-#elif defined(ARDUINO_ARCH_STM32)
-    if (!_port) _port = 3232;
-#endif // ARDUINO_ARCH_STM32
     if (_tcp_ota) {
         delete _tcp_ota;
         _tcp_ota = 0;
@@ -347,10 +340,6 @@ void NOTAClass::begin() {
 #else // ESP8266/ESP32
     _tcp_ota = new WiFiServer(_port);
     _tcp_ota->begin(_port);
-#endif // ARDUINO_ARCH_STM32
-#if !defined(ARDUINO_ARCH_STM32) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
-    MDNS.begin(_hostname.c_str());
-    MDNS.enableArduino(_port, _password.length() > 0);
 #endif // ARDUINO_ARCH_STM32
     _initialized = true;
     _state = OTA_IDLE;
@@ -828,9 +817,6 @@ void NOTAClass::handle() {
     if (!_initialized) return;
     this->listener();
 
-#if defined(ESP8266) && defined(USE_GLOBAL_MDNS) && !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_MDNS)
-    MDNS.update(); //handle MDNS update as well, given that OTA_TCP relies on it anyways
-#endif
 #ifdef NOTA_BROADCAST
     handle_broadcast();
 #endif
