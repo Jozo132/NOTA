@@ -108,6 +108,14 @@ public:
     void setPlatform(const char* platform);
     String getPlatform();
 
+    //Set the board name. Default "Unknown"
+    void setBoard(const char* board);
+    String getBoard();
+
+    //Sets the version string. Default "0.0.0"
+    void setVersion(const char* version);
+    String getVersion();
+
     //Sets the password that will be required for OTA. Default NULL
     void setPassword(const char* password);
 
@@ -150,6 +158,7 @@ private:
     void ota_handle_auth();
     void ota_handle_update();
 #ifdef NOTA_BROADCAST
+    uint32_t last_broadcast = 0;
     void handle_broadcast();
 #endif
     int parseInt();
@@ -160,8 +169,10 @@ private:
     long _last_update_time;
     int _port = 0;
     String _password;
-    String _hostname;
-    String _platform = "Unknown";
+    String _hostname = "";
+    String _platform = "";
+    String _version = "";
+    String _board = "";
     String _nonce;
 #ifdef ARDUINO_ARCH_STM32
     EthernetServer* _tcp_ota = nullptr;
@@ -299,10 +310,14 @@ void NOTAClass::onProgress(THandlerFunction_Progress fn) { _progress_callback = 
 void NOTAClass::onError(THandlerFunction_Error fn) { _error_callback = fn; }
 void NOTAClass::setPort(uint16_t port) { if (!_initialized && !_port && port) _port = port; }
 // void NOTAClass::setStorage(MyFileStorageClass& storage) { if (!_initialized) this->storage = &storage; }
-void NOTAClass::setHostname(const char* hostname) { if (!_initialized && hostname) _hostname = hostname; }
+void NOTAClass::setHostname(const char* hostname) { if (hostname && _hostname.length() == 0) _hostname = hostname; }
 String NOTAClass::getHostname() { return _hostname; }
-void NOTAClass::setPlatform(const char* platform) { if (!_initialized && platform) _platform = platform; }
+void NOTAClass::setPlatform(const char* platform) { if (platform && _platform.length() == 0) _platform = platform; }
 String NOTAClass::getPlatform() { return _platform; }
+void NOTAClass::setBoard(const char* board) { if (board && _board.length() == 0) _board = board; }
+String NOTAClass::getBoard() { return _board; }
+void NOTAClass::setVersion(const char* version) { if (version && _version.length() == 0) _version = version; }
+String NOTAClass::getVersion() { return _version; }
 void NOTAClass::setPassword(const char* password) {
     if (!_initialized && !_password.length() && password) {
         _password = MD5(password);
@@ -428,12 +443,12 @@ void NOTAClass::ota_handle_idle() {
     if (_program_hash_.length() != 32) {
         Serial.println("Invalid MD5 hash length");
         _state = OTA_IDLE;
-        sprintf(ota_temp, "ERR:HASH %s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str());
+        sprintf(ota_temp, "ERR:HASH %s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         error = true;
     } else if (_password.length()) {
         _nonce = MD5(micros());
-        sprintf(ota_temp, "AUTH %s %s|/%s|/%s", _nonce.c_str(), NOTA_VERSION, _hostname.c_str(), _platform.c_str());
+        sprintf(ota_temp, "AUTH %s %s|/%s|/%s|/%s", _nonce.c_str(), NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
         // Serial.printf("Requesting OTA authentication: %s\n", auth_req);
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
@@ -441,7 +456,7 @@ void NOTAClass::ota_handle_idle() {
         _last_auth_time = millis();
     } else {
         Serial.println("Authentication OK");
-        sprintf(ota_temp, "OK %s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str());
+        sprintf(ota_temp, "OK %s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
         _state = OTA_RUNUPDATE;
@@ -547,7 +562,7 @@ void NOTAClass::ota_handle_update() {
         while (ota_client->available()) ota_client->read();
         _state = OTA_IDLE;
         return;
-}
+    }
     while (ota_client->available()) ota_client->read();
     Serial.println("OTA Update started");
 
@@ -688,10 +703,18 @@ void NOTAClass::ota_handle_update() {
     }
     _state = OTA_IDLE;
     while (ota_client->available()) ota_client->read();
-    }
+}
 
 #ifdef NOTA_BROADCAST
 void NOTAClass::handle_broadcast() {
+    if (!this->_initialized) return;
+    uint32_t now = millis();
+    int32_t elapsed = (int32_t) (now - last_broadcast);
+    bool first_time = last_broadcast == 0;
+    if (!first_time && elapsed < 1000) return; // Limit to one response per second
+
+    bool responded = false;
+
     // Check both multicast and broadcast UDP sockets
     for (int i = 0; i < 2; ++i) {
         auto& udp = (i == 0) ? udp_mc : udp_b;
@@ -748,17 +771,15 @@ void NOTAClass::handle_broadcast() {
             buildDeviceId(mac, nameBuf, prefix);
         }
 
-        // Compose JSON response (includes platform, hostname, ota_port, NOTA version)
+        // Compose JSON response (includes platform, hostname, port, NOTA version)
         char out[1024];
         int n = snprintf(out, sizeof(out),
             "{\"m\":\"%s\",\"t\":\"disc_res\",\"nonce\":\"%s\","\
-            "\"name\":\"%s\",\"platform\":\"%s\","\
-            "\"mac\":\"%s\",\"ip\":\"%s\",\"ota_port\":%u,\"nota\":\"%s\",\"uptime_ms\":%lu,"\
-            "\"hostname\":\"%s\"}",
+            "\"n\":\"%s\",\"p\":\"%s\","\
+            "\"mac\":\"%s\",\"ip\":\"%s\",\"port\":%u,\"nota\":\"%s\",\"v\":\"%s\",\"b\":\"%s\"}\n",
             NOTA_BC_MAGIC, nonce,
             nameBuf, _platform.c_str(),
-            macStr, ipStr, (unsigned) _port, NOTA_VERSION, (unsigned long) millis(),
-            _hostname.c_str()
+            macStr, ipStr, (unsigned) _port, NOTA_VERSION, _version.c_str(), _board.c_str()
         );
         if (n <= 0) {
             // logf("Broadcast response encoding error: %d\n", n); 
@@ -773,8 +794,26 @@ void NOTAClass::handle_broadcast() {
         udp.beginPacket(serverIP, NOTA_BC_RESPONSE_PORT);
         udp.write((const uint8_t*) out, (size_t) n);
         udp.endPacket();
-
+        last_broadcast = millis();
+        responded = true;
+        break; // Process only one packet per call to avoid flooding
         // logf("Broadcast DISC_REQ from %u.%u.%u.%u responded\n", serverIP[0], serverIP[1], serverIP[2], serverIP[3]);
+    }
+
+    // Drop all packets if we are flooded
+    if (responded) {
+        while (true) {
+            int packetSize = udp_mc.parsePacket();
+            if (packetSize <= 0) break;
+            char buf[64];
+            udp_mc.read((uint8_t*) buf, sizeof(buf));
+        }
+        while (true) {
+            int packetSize = udp_b.parsePacket();
+            if (packetSize <= 0) break;
+            char buf[64];
+            udp_b.read((uint8_t*) buf, sizeof(buf));
+        }
     }
 }
 #endif // NOTA_BROADCAST
