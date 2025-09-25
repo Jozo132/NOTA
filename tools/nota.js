@@ -49,7 +49,36 @@
     /** @param { any[] } args */
     const println = (...args) => print(...args, '\r\n')
 
-
+    /** @param { string[] } args */
+    const argParser = (args) => {
+        /** @type { { [key: string]: any } } */
+        const argv = {}
+        for (let i = 0; i < args.length; i++) {
+            if (args[i]) {
+                if (args[i].startsWith('--')) { // parse: `--key value` or `--key` or `--key=value`
+                    const arg = args[i].substring(2)
+                    if (arg.includes('=')) {
+                        const parts = arg.split('=')
+                        const key = parts.shift() || ''
+                        argv[key.toLowerCase()] = parts.join('=')
+                    } else if (args[i + 1] && !args[i + 1].startsWith('-')) {
+                        const key = arg
+                        argv[key.toLowerCase()] = args[++i]
+                    } else {
+                        const key = arg
+                        argv[key.toLowerCase()] = true
+                    }
+                } else if (args[i] && args[i].startsWith('-') && (args[i + 1] || '').startsWith('-')) {
+                    const key = args[i].substring(1)
+                    argv[key.toLowerCase()] = true
+                } else if (args[i] && args[i].startsWith('-')) {
+                    const key = args[i].substring(1)
+                    argv[key.toLowerCase()] = args[++i]
+                }
+            }
+        }
+        return argv
+    }
 
     // const CHUNK_SIZE = 1460 // espota.py default: 1460 bytes
     // const CHUNK_SIZE = 1460 * 4 // nota.js: tested with ESP8266 and seems to be fast and reliable at 4x the size of the original espota.py
@@ -66,33 +95,7 @@
     const supported_versions = ['0.0.2']
 
     // Parse command line arguments
-    const argv_raw = process.argv.slice(2)
-    /** @type { Record<string, any> } */
-    const argv = {}
-    for (let i = 0; i < argv_raw.length; i++) {
-        if (argv_raw[i]) {
-            if (argv_raw[i].startsWith('--')) { // parse: `--key value` or `--key` or `--key=value`
-                const arg = argv_raw[i].substring(2)
-                if (arg.includes('=')) {
-                    const parts = arg.split('=')
-                    const key = parts.shift() || ''
-                    argv[key.toLowerCase()] = parts.join('=')
-                } else if (argv_raw[i + 1] && !argv_raw[i + 1].startsWith('-')) {
-                    const key = arg
-                    argv[key.toLowerCase()] = argv_raw[++i]
-                } else {
-                    const key = arg
-                    argv[key.toLowerCase()] = true
-                }
-            } else if (argv_raw[i] && argv_raw[i].startsWith('-') && (argv_raw[i + 1] || '').startsWith('-')) {
-                const key = argv_raw[i].substring(1)
-                argv[key.toLowerCase()] = true
-            } else if (argv_raw[i] && argv_raw[i].startsWith('-')) {
-                const key = argv_raw[i].substring(1)
-                argv[key.toLowerCase()] = argv_raw[++i]
-            }
-        }
-    }
+    const argv = argParser(process.argv.slice(2))
 
     const device_name_raw = argv.n || argv.name || ''
     const device_name = typeof device_name_raw === 'string' ? device_name_raw.trim() : ''
