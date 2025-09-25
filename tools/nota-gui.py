@@ -29,18 +29,25 @@ from tkinter import messagebox
 
 # Import the subprocess module to run the OTA tool
 from subprocess import *
+import argparse
 
 # Get parent folder name from current path
 TITLE = os.path.basename(os.getcwd())
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("-f", "--file", dest="cli_file")
+_parser.add_argument("-n", "--name", dest="cli_name")
+_args, _unknown = _parser.parse_known_args()
+NAME = _args.cli_name if _args.cli_name else TITLE
+FILE_NAME = _args.cli_file if _args.cli_file else ""
 
 ip = env_read("TEMP_OTA_IP")
 port = env_read("TEMP_OTA_PORT")
 auth = env_read("TEMP_OTA_AUTH")
 file_path = env_read("TEMP_OTA_FILE")
 file_path = file_path.replace("\\", "/")
-file = file_path.split("/")[-1]
+file = FILE_NAME if FILE_NAME != "" else (file_path if file_path != "" else "./firmware.bin")
 
 
 # Create the main window
@@ -153,7 +160,7 @@ def ota_upload(force=False):
     command_pipe.append("-f"); command_pipe.append(file_path)
     command_pipe.append("-i"); command_pipe.append(ip)
     command_pipe.append("-p"); command_pipe.append(port)
-    command_pipe.append("-n"); command_pipe.append(TITLE)
+    command_pipe.append("-n"); command_pipe.append(NAME)
     if force:
         command_pipe.append("--force")
 
