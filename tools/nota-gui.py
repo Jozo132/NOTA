@@ -125,7 +125,7 @@ usb_button = tk.Button(root, text="USB Upload", command=usb_upload, width=10)
 usb_button.grid(row=3, column=3, padx=10, pady=3)
 
 # Create the ota_upload button
-def ota_upload():
+def ota_upload(force=False):
     ip = entry2.get()
     port = entry3.get()
     auth = entry4.get()
@@ -148,10 +148,21 @@ def ota_upload():
 
     # Run the OTA tool with live stdout output
 
-    if (auth == ""):
-        process = Popen(["node", f"{script_dir}/nota.js", "-f", file_path, "-i", ip, "-p", port], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
-    else:
-        process = Popen(["node", f"{script_dir}/nota.js", "-f", file_path, "-i", ip, "-p", port, "-a", auth], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
+    command_pipe = ["node", f"{script_dir}/nota.js"]
+
+    command_pipe.append("-f"); command_pipe.append(file_path)
+    command_pipe.append("-i"); command_pipe.append(ip)
+    command_pipe.append("-p"); command_pipe.append(port)
+    command_pipe.append("-n"); command_pipe.append(TITLE)
+    if force:
+        command_pipe.append("--force")
+
+    if auth and auth != "":
+        command_pipe.append("-a"); command_pipe.append(auth)
+
+    print("Running command: " + " ".join(command_pipe) + "\n")
+
+    process = Popen(command_pipe, stdout=PIPE, stderr=STDOUT, universal_newlines=True)
 
     while True:
         output = process.stdout.read(1)
@@ -162,13 +173,15 @@ def ota_upload():
 
 ota_button = tk.Button(root, text="OTA Upload", command=ota_upload, width=10)
 ota_button.grid(row=4, column=3, padx=10)
+ota_force_button = tk.Button(root, text="OTA Force", command=lambda: ota_upload(True), width=10)
+ota_force_button.grid(row=5, column=3, padx=10, pady=3)
 
 # Create the read-only console text field for the output
 # Margin 10, wrap text
 # height 10, width 80, font Consolas, size 6
 # row 5, column 0, columnspan 4
 text = tk.Text(root, wrap=tk.WORD, height=20, width=140, font=("Consolas", 8))
-text.grid(row=5, column=0, columnspan=4, padx=10, pady=10)
+text.grid(row=6, column=0, columnspan=4, padx=10, pady=10)
 # Make the text field read-only
 text.config(state=tk.DISABLED)
 

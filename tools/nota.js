@@ -257,7 +257,7 @@
 
             const binfile = filename.replace('.elf', '.bin')
             // arm-none-eabi-objcopy -O binary firmware.elf firmware.bin
-            const cmd = `arm-none-eabi-objcopy -O binary ${filename} ${binfile}`
+            const cmd = `arm-none-eabi-objcopy -O binary "${filename}" "${binfile}"`
             println(`${timestamp(ts)}Converting ELF to BIN`)
             await exec_promise(cmd)
             filename = binfile
@@ -272,20 +272,24 @@
         const res_update = sock.readAll()
         if (!res_update) throw new Error(`No Answer from ${host}:${port}`)
         const res_parts = res_update.split(' ')
-        const response = res_parts.shift() || '' // 'AUTH' or 'OK'
+        println(res_parts);
+        let response = res_parts.shift() || '' // 'AUTH' or 'OK'
+        while (!['OK', 'AUTH'].includes(response) && res_parts.length) response = res_parts.shift() || ''
         const nonce = response === 'AUTH' ? res_parts.shift() || '' : '' // required for authentication
         const meta = res_parts.join(' ')
         const meta_parts = meta.includes('|/') ? meta.split('|/') : res_parts
-        const version = meta_parts.shift() || '' // NOTA version (e.g. "1.1")
+        const nota_version = meta_parts.shift() || '' // NOTA version (e.g. "1.1")
         const dev_name = meta_parts.shift() || '' // device name (e.g. "esp8266-012345")
         const dev_platform = meta_parts.shift() || '' // device platform (e.g. "ESP8266" or "STM32F4")
-        const full_name = dev_name + (dev_platform ? ` [${dev_platform}]` : '')
-        if (version && !supported_versions.includes(version)) {
-            if (!force) throw new Error(`Incompatible NOTA version ${JSON.stringify(version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Use [--force] to override.`)
-            else println(`${timestamp(ts)}Warning: Incompatible NOTA version ${JSON.stringify(version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Continuing due to [--force].`)
+        const dev_version = meta_parts.shift() || '' // device version (e.g. "0.0.1")
+        const version = dev_version && dev_version !== '0.0.0' ? dev_version : ''
+        const full_name = dev_name + (dev_platform ? ` [${dev_platform}]` : '') + (version ? ` ${version}` : '')
+        if (nota_version && !supported_versions.includes(nota_version)) {
+            if (!force) throw new Error(`Incompatible NOTA version ${JSON.stringify(nota_version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Use [--force] to override.`)
+            else println(`${timestamp(ts)}Warning: Incompatible NOTA version ${JSON.stringify(nota_version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Continuing due to [--force].`)
         }
-        if (version) {
-            println(`${timestamp(ts)}Found ${full_name} with NOTA v${version}`)
+        if (nota_version) {
+            println(`${timestamp(ts)}Found ${full_name} with NOTA v${nota_version}`)
         } else {
             println(`${timestamp(ts)}Info: Target device ${JSON.stringify(full_name)} is using an old NOTA version.`)
         }
