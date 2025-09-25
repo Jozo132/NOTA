@@ -32,6 +32,7 @@ from subprocess import *
 
 # Get parent folder name from current path
 TITLE = os.path.basename(os.getcwd())
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
 
 ip = env_read("TEMP_OTA_IP")
@@ -148,9 +149,9 @@ def ota_upload():
     # Run the OTA tool with live stdout output
 
     if (auth == ""):
-        process = Popen(["node", "./tools/nota/nota.js", "-f", file_path, "-i", ip, "-p", port], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
+        process = Popen(["node", f"{script_dir}/nota.js", "-f", file_path, "-i", ip, "-p", port], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
     else:
-        process = Popen(["node", "./tools/nota/nota.js", "-f", file_path, "-i", ip, "-p", port, "-a", auth], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
+        process = Popen(["node", f"{script_dir}/nota.js", "-f", file_path, "-i", ip, "-p", port, "-a", auth], stdout=PIPE, stderr=STDOUT, universal_newlines=True)
 
     while True:
         output = process.stdout.read(1)
