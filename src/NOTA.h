@@ -443,12 +443,12 @@ void NOTAClass::ota_handle_idle() {
     if (_program_hash_.length() != 32) {
         Serial.println("Invalid MD5 hash length");
         _state = OTA_IDLE;
-        sprintf(ota_temp, "ERR:HASH %s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
+        sprintf(ota_temp, "ERR:HASH %s|/%s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _board.c_str(), _version.c_str());
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         error = true;
     } else if (_password.length()) {
         _nonce = MD5(micros());
-        sprintf(ota_temp, "AUTH %s %s|/%s|/%s|/%s", _nonce.c_str(), NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
+        sprintf(ota_temp, "AUTH %s %s|/%s|/%s|/%s|/%s", _nonce.c_str(), NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _board.c_str(), _version.c_str());
         // Serial.printf("Requesting OTA authentication: %s\n", auth_req);
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
@@ -456,7 +456,7 @@ void NOTAClass::ota_handle_idle() {
         _last_auth_time = millis();
     } else {
         Serial.println("Authentication OK");
-        sprintf(ota_temp, "OK %s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _version.c_str());
+        sprintf(ota_temp, "OK %s|/%s|/%s|/%s|/%s", NOTA_VERSION, _hostname.c_str(), _platform.c_str(), _board.c_str(), _version.c_str());
         ota_client->write((const char*) ota_temp, strlen(ota_temp));
         delay(100);
         _state = OTA_RUNUPDATE;

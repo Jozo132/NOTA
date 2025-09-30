@@ -38,9 +38,12 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("-f", "--file", dest="cli_file")
 _parser.add_argument("-n", "--name", dest="cli_name")
+_parser.add_argument("-b", "--board", dest="cli_board")
 _args, _unknown = _parser.parse_known_args()
 NAME = _args.cli_name if _args.cli_name else TITLE
 FILE_NAME = _args.cli_file if _args.cli_file else ""
+BOARD = _args.cli_board if _args.cli_board else ""
+
 
 ip = env_read("TEMP_OTA_IP")
 port = env_read("TEMP_OTA_PORT")
@@ -161,13 +164,15 @@ def ota_upload(force=False):
     command_pipe.append("-i"); command_pipe.append(ip)
     command_pipe.append("-p"); command_pipe.append(port)
     command_pipe.append("-n"); command_pipe.append(NAME)
+    if BOARD and BOARD != "":
+        command_pipe.append("-b"); command_pipe.append(BOARD)
     if force:
         command_pipe.append("--force")
 
     if auth and auth != "":
         command_pipe.append("-a"); command_pipe.append(auth)
 
-    print("Running command: " + " ".join(command_pipe) + "\n")
+    # print("Running command: " + " ".join(command_pipe) + "\n")
 
     process = Popen(command_pipe, stdout=PIPE, stderr=STDOUT, universal_newlines=True)
 

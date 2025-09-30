@@ -92,13 +92,14 @@
     const TEST = 201
     const total_bars = 40
 
-    const supported_versions = ['0.0.2']
+    const supported_versions = ['0.0.2', '0.0.3']
 
     // Parse command line arguments
     const argv = argParser(process.argv.slice(2))
 
     const device_name_raw = argv.n || argv.name || ''
     const device_name = typeof device_name_raw === 'string' ? device_name_raw.trim() : ''
+    const device_board = argv.b || argv.board || ''
     const host = argv.i || argv.ip || ''
     const port = argv.p || argv.port || DEFAULT_PORT
     const auth = argv.a || argv.auth || ''
@@ -275,7 +276,7 @@
         const res_update = sock.readAll()
         if (!res_update) throw new Error(`No Answer from ${host}:${port}`)
         const res_parts = res_update.split(' ')
-        println(res_parts);
+        // println(res_parts);
         let response = res_parts.shift() || '' // 'AUTH' or 'OK'
         while (!['OK', 'AUTH'].includes(response) && res_parts.length) response = res_parts.shift() || ''
         const nonce = response === 'AUTH' ? res_parts.shift() || '' : '' // required for authentication
@@ -284,9 +285,15 @@
         const nota_version = meta_parts.shift() || '' // NOTA version (e.g. "1.1")
         const dev_name = meta_parts.shift() || '' // device name (e.g. "esp8266-012345")
         const dev_platform = meta_parts.shift() || '' // device platform (e.g. "ESP8266" or "STM32F4")
+        const dev_board = meta_parts.shift() || '' // device board (e.g. "NodeMCU 1.0" or "XTP14A6E")
         const dev_version = meta_parts.shift() || '' // device version (e.g. "0.0.1")
         const version = dev_version && dev_version !== '0.0.0' ? dev_version : ''
-        const full_name = dev_name + (dev_platform ? ` [${dev_platform}]` : '') + (version ? ` ${version}` : '')
+        const full_name = [
+            dev_name,
+            dev_board ? `(${dev_board})` : '',
+            dev_platform ? `[${dev_platform}]` : '',
+            version
+        ].filter(Boolean).join(' ')
         if (nota_version && !supported_versions.includes(nota_version)) {
             if (!force) throw new Error(`Incompatible NOTA version ${JSON.stringify(nota_version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Use [--force] to override.`)
             else println(`${timestamp(ts)}Warning: Incompatible NOTA version ${JSON.stringify(nota_version)} from target device ${JSON.stringify(full_name)}. Supported versions: ${supported_versions.map(x => JSON.stringify(x)).join(', ')}. Continuing due to [--force].`)
@@ -303,6 +310,15 @@
             } else {
                 if (!force) throw new Error(`Target device name ${JSON.stringify(dev_name)} does not match the expected name ${JSON.stringify(device_name)}. Use [--force] to override.`)
                 else println(`${timestamp(ts)}Warning: Target device name ${JSON.stringify(dev_name)} does not match the expected name ${JSON.stringify(device_name)}. Continuing due to [--force].`)
+            }
+        }
+        if (dev_board && dev_board !== device_board) {
+            if (!device_board) {
+                if (!force) throw new Error(`Target device board ${JSON.stringify(dev_board)} received, but no expected board provided. Use [-b] / [--board] to set the expected board or use [--force] to override.`)
+                else println(`${timestamp(ts)}Warning: Target device board ${JSON.stringify(dev_board)} received, but no expected board provided. Continuing due to [--force].`)
+            } else {
+                if (!force) throw new Error(`Target device board ${JSON.stringify(dev_board)} does not match the expected board ${JSON.stringify(device_board)}. Use [--force] to override.`)
+                else println(`${timestamp(ts)}Warning: Target device board ${JSON.stringify(dev_board)} does not match the expected board ${JSON.stringify(device_board)}. Continuing due to [--force].`)
             }
         }
         if (response === 'AUTH') {
