@@ -60,7 +60,7 @@
 #define ENV(x) __XENV(x)
 #endif /* ENV */
 
-#define NOTA_VERSION "0.0.2"
+#define NOTA_VERSION "0.0.3"
 
 static char ota_temp[128];
 
