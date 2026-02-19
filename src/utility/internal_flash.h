@@ -73,13 +73,19 @@ struct OTAStorage {
         EraseInitStruct.NbSectors = ota_sector_count;
         EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
         uint32_t pageError = 0;
+        // STM32F4 is single-bank flash: CPU stalls during erase.
+        // Any ISR whose code is in flash will hard-fault, so disable all interrupts.
+        __disable_irq();
         HAL_StatusTypeDef status = HAL_FLASHEx_Erase(&EraseInitStruct, &pageError);
+        __enable_irq();
         int reties = 3;
         while (status != HAL_OK) {
             reties--;
             if (reties == 0) break;
             delay(1);
+            __disable_irq();
             status = HAL_FLASHEx_Erase(&EraseInitStruct, &pageError);
+            __enable_irq();
         }
         return status == HAL_OK;
     }
@@ -92,7 +98,9 @@ struct OTAStorage {
             int retries = 3;
             HAL_StatusTypeDef status = HAL_OK;
             while (true) {
+                __disable_irq();
                 status = HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, program_ota_address + program_ota_index, data);
+                __enable_irq();
                 if (status == HAL_OK) break;
                 retries--;
                 if (retries == 0) break;

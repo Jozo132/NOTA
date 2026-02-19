@@ -526,6 +526,10 @@ void NOTAClass::ota_handle_update() {
 #ifdef ESP
     if (!Update.begin(_size, _cmd)) {
 #elif defined(ARDUINO_ARCH_STM32) // Using ArduinoOTA with NO_OTA_NETWORK -> InternalStorage
+    // Fire callbacks BEFORE flash operations - on STM32F4 single-bank flash,
+    // any ISR executing from flash during erase/write will hard-fault.
+    if (_request_callback) _request_callback();
+    if (_start_callback) _start_callback();
     int ota_open_error = InternalStorage.open(_size);
     if (ota_open_error > 0) {
 #endif
@@ -566,8 +570,7 @@ void NOTAClass::ota_handle_update() {
     while (ota_client->available()) ota_client->read();
     Serial.println("OTA Update started");
 
-    if (_request_callback) _request_callback();
-    if (_start_callback) _start_callback();
+    // Note: _request_callback and _start_callback already called before InternalStorage.open()
     // Serial.printf("Sketch start address: 0x%08X\n", FLASH_BASE + InternalStorage.SKETCH_START_ADDRESS);
     // Serial.printf("Page size: %d\n", InternalStorage.PAGE_SIZE);
     // Serial.printf("Max flash: %d \n", InternalStorage.MAX_FLASH);
