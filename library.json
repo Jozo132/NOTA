@@ -1,0 +1,38 @@
+{
+    "name": "NOTA",
+    "version": "0.0.3",
+    "description": "Network Over-The-Air (NOTA) firmware upload via TCP connection. Supports ESP8266, ESP32, and STM32 with WiFi/Ethernet. Includes CLI uploader (Node.js) and optional GUI (Python/Tkinter).",
+    "keywords": "ota, firmware, update, upload, tcp, wifi, ethernet, network",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Jozo132/NOTA.git"
+    },
+    "authors": [
+        {
+            "name": "Joze Vovk",
+            "email": "jozo132@gmail.com",
+            "maintainer": true
+        }
+    ],
+    "license": "MIT",
+    "homepage": "https://github.com/Jozo132/NOTA",
+    "frameworks": "arduino",
+    "platforms": [
+        "espressif8266",
+        "espressif32",
+        "ststm32"
+    ],
+    "build": {
+        "extraScript": "extra_script.py"
+    },
+    "export": {
+        "include": [
+            "src/**",
+            "tools/**",
+            "extra_script.py",
+            "library.json",
+            "library.properties",
+            "keywords.txt"
+        ]
+    }
+}
