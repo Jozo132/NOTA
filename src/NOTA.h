@@ -530,7 +530,13 @@ void NOTAClass::ota_handle_update() {
     // any ISR executing from flash during erase/write will hard-fault.
     if (_request_callback) _request_callback();
     if (_start_callback) _start_callback();
+    Serial.println("[OTA] Erasing flash...");
+    Serial.flush();
+    IWatchdog.reload();
     int ota_open_error = InternalStorage.open(_size);
+    IWatchdog.reload();
+    Serial.println("[OTA] Flash erase done");
+    Serial.flush();
     if (ota_open_error > 0) {
 #endif
         Serial.println("Update Begin Error");
