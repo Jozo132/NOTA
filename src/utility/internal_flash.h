@@ -3,7 +3,214 @@
 #include <Arduino.h>
 #include "stm32_flash_boot.h"
 
+// Define NOTA_EXT_FLASH_OTA=1 (e.g. in platformio.ini build_flags) to stage OTA firmware
+// on an external SPI flash chip via SPIMemory library. This allows full MCU flash updates
+// because the staging area is not limited to the upper half of internal flash.
+// Default (0): stage directly in the upper sectors of internal MCU flash (classic approach,
+// firmware size limited to ~half of internal flash).
+#ifndef NOTA_EXT_FLASH_OTA
+#define NOTA_EXT_FLASH_OTA 0
+#endif
+
 uint32_t program_memory_address = 0x08000000;
+
+#if NOTA_EXT_FLASH_OTA
+
+// ============================================================================
+// External SPI-flash OTA backend
+// Requires: SPIMemory library, and an SPIFlash instance named `flash` plus
+// a bool `flash_initialized` and spi_select(SPI_Flash/SPI_None) in scope
+// (provided by xtp_flash.h or equivalent).
+// ============================================================================
+
+#include <SPIMemory.h>
+
+#ifndef NOTA_EXT_FLASH_OTA_ADDRESS
+#define NOTA_EXT_FLASH_OTA_ADDRESS 0x00010000UL
+#endif
+
+#ifndef NOTA_EXT_FLASH_OTA_FROM_END
+#define NOTA_EXT_FLASH_OTA_FROM_END 0
+#endif
+
+#ifndef NOTA_INTERNAL_FLASH_SIZE
+#if defined(FLASH_END) && defined(FLASH_BASE)
+#define NOTA_INTERNAL_FLASH_SIZE ((uint32_t) ((FLASH_END + 1UL) - FLASH_BASE))
+#elif defined(STM32F411xE)
+#define NOTA_INTERNAL_FLASH_SIZE 0x00080000UL
+#else
+#define NOTA_INTERNAL_FLASH_SIZE 0x00040000UL
+#endif
+#endif
+
+#ifndef NOTA_EXT_FLASH_PAGE_SIZE
+#define NOTA_EXT_FLASH_PAGE_SIZE 256U
+#endif
+
+#ifndef NOTA_EXT_FLASH_ERASE_SIZE
+#define NOTA_EXT_FLASH_ERASE_SIZE 4096U
+#endif
+
+uint32_t program_ota_address = NOTA_EXT_FLASH_OTA_ADDRESS;
+uint32_t program_ota_max_size = NOTA_INTERNAL_FLASH_SIZE;
+uint32_t ota_sector = 6;
+uint32_t ota_sector_count = 2;
+
+struct OTAStorage {
+    uint32_t program_ota_index = 0;
+    uint32_t staged_size = 0;
+    uint32_t erase_start = NOTA_EXT_FLASH_OTA_ADDRESS;
+    uint32_t erase_size = 0;
+    uint8_t data[NOTA_EXT_FLASH_PAGE_SIZE];
+    uint32_t data_idx = 0;
+
+    uint32_t align_down(uint32_t value, uint32_t alignment) {
+        return value - (value % alignment);
+    }
+
+    uint32_t align_up(uint32_t value, uint32_t alignment) {
+        if (value == 0) return 0;
+        uint32_t remainder = value % alignment;
+        return remainder == 0 ? value : (value + alignment - remainder);
+    }
+
+    bool compute_erase_window(uint32_t address, uint32_t size, uint32_t &start, uint32_t &length) {
+        if (size == 0) return false;
+        start = align_down(address, NOTA_EXT_FLASH_ERASE_SIZE);
+        uint32_t end = align_up(address + size, NOTA_EXT_FLASH_ERASE_SIZE);
+        if (end < address) return false;
+        length = end - start;
+        return length >= size;
+    }
+
+    void select_flash() {
+        spi_select(SPI_Flash);
+    }
+
+    void release_flash() {
+        spi_select(SPI_None);
+    }
+
+    // Re-initialize if there is any error state, even if already initialized.
+    // A stale error flag left by another SPI peripheral (e.g. Ethernet) after a shared-SPI
+    // bus transaction causes flash.error() to be nonzero, which makes writes fail silently.
+    bool ensure_flash_ready() {
+        select_flash();
+        if (!flash_initialized || flash.error()) {
+            flash.begin();
+            if (flash.error()) {
+                release_flash();
+                return false;
+            }
+            flash_initialized = true;
+        }
+        bool ready = !flash.error();
+        release_flash();
+        return ready;
+    }
+
+    uint32_t resolve_storage_address(uint32_t size) {
+#if NOTA_EXT_FLASH_OTA_FROM_END
+        select_flash();
+        uint32_t flash_capacity = flash.getCapacity();
+        release_flash();
+        if (size > flash_capacity) return 0xFFFFFFFFUL;
+        // Align down to page boundary so every flush_page() write is page-aligned.
+        // Without this, the first write starts mid-page and SPIMemory wraps within the
+        // same page, corrupting data.
+        uint32_t ota_address = align_down(flash_capacity - size, NOTA_EXT_FLASH_PAGE_SIZE);
+        if (ota_address < NOTA_EXT_FLASH_OTA_ADDRESS) return 0xFFFFFFFFUL;
+        return ota_address;
+#else
+        (void) size;
+        return NOTA_EXT_FLASH_OTA_ADDRESS;
+#endif
+    }
+
+    bool has_capacity(uint32_t size) {
+        uint32_t ota_address = resolve_storage_address(size);
+        if (ota_address == 0xFFFFFFFFUL) return false;
+        uint32_t required_erase_start = 0;
+        uint32_t required_erase_size = 0;
+        if (!compute_erase_window(ota_address, size, required_erase_start, required_erase_size)) return false;
+        if (required_erase_start < NOTA_EXT_FLASH_OTA_ADDRESS) return false;
+        select_flash();
+        uint32_t flash_capacity = flash.getCapacity();
+        release_flash();
+        return (required_erase_start + required_erase_size) <= flash_capacity;
+    }
+
+    uint32_t maxSize() {
+        return program_ota_max_size;
+    }
+
+    int open(uint32_t size) {
+        if (size == 0 || size > program_ota_max_size) return 1;
+        if (!ensure_flash_ready()) return 2;
+        program_ota_address = resolve_storage_address(size);
+        if (!has_capacity(size)) return 4;
+        if (!compute_erase_window(program_ota_address, size, erase_start, erase_size)) return 4;
+        program_ota_index = 0;
+        staged_size = size;
+        data_idx = 0;
+        memset(data, 0xFF, sizeof(data));
+        if (!erase()) return 3;
+        return 0;
+    }
+
+    bool erase() {
+        // SPIMemory 3.4.0 eraseSection() never advances _currentAddress between block-erase
+        // iterations, so only the first 64 KB of the staging region ever gets erased.
+        // Iterate eraseSector() (4 KB each) manually to cover the full window.
+        select_flash();
+        bool ok = true;
+        for (uint32_t addr = erase_start; addr < erase_start + erase_size && ok; addr += NOTA_EXT_FLASH_ERASE_SIZE) {
+            ok = flash.eraseSector(addr);
+        }
+        release_flash();
+        return ok;
+    }
+
+    bool flush_page() {
+        if (data_idx == 0) return true;
+        uint32_t page_address = program_ota_address + program_ota_index - data_idx;
+        select_flash();
+        bool ok = flash.writeByteArray(page_address, data, data_idx);
+        release_flash();
+        memset(data, 0xFF, sizeof(data));
+        data_idx = 0;
+        return ok;
+    }
+
+    bool write(uint8_t b) {
+        if (program_ota_index >= staged_size) return false;
+        data[data_idx++] = b;
+        program_ota_index++;
+        if (data_idx == sizeof(data)) {
+            return flush_page();
+        }
+        return true;
+    }
+
+    bool close() {
+        return flush_page();
+    }
+
+    void apply() {
+        digitalWrite(FLASH_CS_pin, HIGH);
+        noInterrupts();
+        copy_flash_pages_from_spi_nota(program_memory_address, (uintptr_t) SPI2, (uintptr_t) GPIOC, (1UL << 6), program_ota_address, staged_size, true);
+    }
+} InternalStorage;
+
+#else // !NOTA_EXT_FLASH_OTA
+
+// ============================================================================
+// Internal-flash OTA backend (classic)
+// Stages firmware in the upper sectors of internal MCU flash using HAL APIs.
+// Firmware size is limited to roughly half of internal flash.
+// ============================================================================
+
 uint32_t program_ota_address = 0x08040000;
 uint32_t program_ota_max_size = 0x00040000;
 uint32_t ota_sector = 6;
@@ -306,3 +513,5 @@ struct OTAStorage {
         // Never reaches here — MCU resets inside the function
     }
 } InternalStorage;
+
+#endif // NOTA_EXT_FLASH_OTA

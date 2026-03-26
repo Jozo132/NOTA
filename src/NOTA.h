@@ -60,7 +60,11 @@
 #define ENV(x) __XENV(x)
 #endif /* ENV */
 
-#define NOTA_VERSION "0.0.3"
+#define NOTA_VERSION "0.0.4"
+
+#ifndef NOTA_TCP_CHUNK_SIZE
+#define NOTA_TCP_CHUNK_SIZE 2048U
+#endif
 
 static char ota_temp[128];
 
@@ -552,9 +556,15 @@ void NOTAClass::ota_handle_update() {
         sprintf(ota_temp, "Unable to open InternalStorage with size %d, max size is %d", _size, max_size);
         switch (ota_open_error) {
             case 1: Serial.println("(1) Size overflow"); break;
+#if NOTA_EXT_FLASH_OTA
+            case 2: Serial.println("(2) SPI flash init problem"); break;
+            case 3: Serial.println("(3) SPI flash erase problem"); break;
+            case 4: Serial.println("(4) SPI flash capacity problem"); break;
+#else
             case 2: Serial.println("(2) HAL_FLASH_Unlock problem"); break;
             case 3: Serial.println("(3) HAL_FLASHEx_Erase problem"); break;
             case 4: Serial.println("(4) SectorError problem"); break;
+#endif
             default: Serial.printf("(%d) Unknown error code\n", ota_open_error); break;
         }
         String ss = ota_temp;
@@ -612,8 +622,9 @@ void NOTAClass::ota_handle_update() {
 #else
     bool valid = true;
     while (valid && _state == OTA_RUNUPDATE && (ota_client->connected() || ota_client->available())) {
-        // while (_state == OTA_RUNUPDATE && total < _size && valid && ota_client->connected() && ota_client->available()) {
 #endif
+        uint32_t remaining = (uint32_t) _size - total;
+        uint32_t target_chunk = remaining > NOTA_TCP_CHUNK_SIZE ? NOTA_TCP_CHUNK_SIZE : remaining;
         bool available = ota_client->available();
         if (!available && waited--) {
             delay(1);
@@ -630,33 +641,40 @@ void NOTAClass::ota_handle_update() {
         written = Update.write(*ota_client);
 #else
         written = 0;
-        while (valid && (ota_client->available())) {
+        while (valid && written < target_chunk) {
+            if (!ota_client->available()) {
+                if (waited--) {
+                    delay(1);
+                    continue;
+                }
+                Serial.printf("\nReceive Failed: CHUNK TIMEOUT\n");
+                if (_error_callback) _error_callback(OTA_RECEIVE_ERROR);
+                valid = false;
+                break;
+            }
+            waited = 1000;
             uint8_t b = ota_client->read();
             if (!InternalStorage.write(b)) {
                 Serial.printf("\nReceive Failed: InternalStorage.write\n");
                 if (_error_callback) _error_callback(OTA_RECEIVE_ERROR);
                 valid = false;
                 break;
-            } else {
-                if ((total + written) < 0xFF) {
-                    Serial.printf("%02X ", b);
-                }
             }
             written++;
-#endif
-            if (written >= InternalStorage.maxSize()) {
+            if ((total + written) > InternalStorage.maxSize()) {
                 Serial.printf("\nReceive Failed: SIZE OVERFLOW\n");
                 if (_error_callback) _error_callback(OTA_RECEIVE_ERROR);
                 valid = false;
                 break;
             }
-            if (written > _size) {
+            if ((total + written) > (uint32_t) _size) {
                 Serial.printf("\nReceive Failed: SIZE MISMATCH\n");
                 if (_error_callback) _error_callback(OTA_RECEIVE_ERROR);
                 valid = false;
                 break;
             }
         }
+#endif
         if (written > 0) {
             ota_client->print(written, DEC);
             total += written;
@@ -667,16 +685,13 @@ void NOTAClass::ota_handle_update() {
 #ifdef ESP
     if (Update.end()) {
 #else
-    // TODO: verify MD5 hash
-    if (valid && _state == OTA_RUNUPDATE && total == _size) {
+    if (valid && _state == OTA_RUNUPDATE && total == (uint32_t) _size && InternalStorage.close()) {
 #endif
         Serial.printf("Update Success: %u\n", total);
 
         if (_end_callback) _end_callback();
 
         delay(10);
-        InternalStorage.close();
-
 
         // Ensure last count packet has been sent out and not combined with the final OK
         ota_client->flush();
