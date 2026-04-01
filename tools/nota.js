@@ -321,6 +321,28 @@
                 else println(`${timestamp(ts)}Warning: Target device board ${JSON.stringify(dev_board)} does not match the expected board ${JSON.stringify(device_board)}. Continuing due to [--force].`)
             }
         }
+        // ── Compilation date verification ────────────────────────────────
+        // The MCU version string now includes the compilation date and time,
+        // e.g. "2.2 Build 190 Jun 27 2025 14:30:00". If the .bin file's
+        // modification time matches the MCU's compilation date, the firmware
+        // is likely the same — skip the upload unless --force is used.
+        if (upload && version) {
+            // Parse "X.Y Build N <MMM DD YYYY> <HH:MM:SS>" from MCU version
+            const dateMatch = version.match(/Build\s+\d+\s+(.+)/)
+            if (dateMatch) {
+                const mcuDateStr = dateMatch[1].trim()
+                const mcuDate = new Date(mcuDateStr)
+                if (!isNaN(mcuDate.getTime())) {
+                    const fileStat = fs.statSync(filename)
+                    const fileMtime = fileStat.mtime
+                    const diffMs = Math.abs(fileMtime.getTime() - mcuDate.getTime())
+                    if (diffMs < 60_000) { // within 60 seconds
+                        if (!force) throw new Error(`Firmware appears to be the same as the running version (${version}). Binary file date: ${fileMtime.toISOString()}, MCU compile date: ${mcuDate.toISOString()}. Use [--force] to override.`)
+                        else println(`${timestamp(ts)}Warning: Firmware appears to be the same as the running version. Continuing due to [--force].`)
+                    }
+                }
+            }
+        }
         if (response === 'AUTH') {
             if (!auth || auth === true) throw new Error(`Target requires authentication. Please provide the password with [-a] / [--auth]`)
             const cnonce_text = `${filename}${content_size}${file_md5}${host}`
