@@ -92,7 +92,7 @@
     const TEST = 201
     const total_bars = 40
 
-    const supported_versions = ['0.0.2', '0.0.3']
+    const supported_versions = ['0.0.2', '0.0.3', '0.0.4']
 
     // Parse command line arguments
     const argv = argParser(process.argv.slice(2))
