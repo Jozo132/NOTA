@@ -26,6 +26,7 @@ from src.tools import *
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import messagebox
+import shutil
 
 # Import the subprocess module to run the OTA tool
 from subprocess import *
@@ -39,18 +40,55 @@ _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("-f", "--file", dest="cli_file")
 _parser.add_argument("-n", "--name", dest="cli_name")
 _parser.add_argument("-b", "--board", dest="cli_board")
+_parser.add_argument("--bmp-port", dest="cli_bmp_port")
+_parser.add_argument("--bmp-target", dest="cli_bmp_target")
+_parser.add_argument("--gdb", dest="cli_gdb")
 _args, _unknown = _parser.parse_known_args()
 NAME = _args.cli_name if _args.cli_name else TITLE
 FILE_NAME = _args.cli_file if _args.cli_file else ""
 BOARD = _args.cli_board if _args.cli_board else ""
+GDB = _args.cli_gdb if _args.cli_gdb else ""
 
 
 ip = env_read("TEMP_OTA_IP")
 port = env_read("TEMP_OTA_PORT")
 auth = env_read("TEMP_OTA_AUTH")
+bmp_port = _args.cli_bmp_port if _args.cli_bmp_port else env_read("TEMP_BMP_PORT")
+bmp_target = _args.cli_bmp_target if _args.cli_bmp_target else env_read("TEMP_BMP_TARGET")
+bmp_target = bmp_target if bmp_target else "1"
 file_path = env_read("TEMP_OTA_FILE")
 file_path = file_path.replace("\\", "/")
 file = FILE_NAME if FILE_NAME != "" else (file_path if file_path != "" else "./firmware.bin")
+
+
+def find_arm_gdb():
+    if GDB and os.path.isfile(GDB):
+        return GDB
+    detected = shutil.which("arm-none-eabi-gdb")
+    if detected:
+        return detected
+    home = os.path.expanduser("~")
+    guesses = [
+        os.path.join(home, ".platformio", "packages", "toolchain-gccarmnoneeabi", "bin", "arm-none-eabi-gdb.exe"),
+        os.path.join(home, ".platformio", "packages", "toolchain-gccarmnoneeabi", "bin", "arm-none-eabi-gdb"),
+    ]
+    for candidate in guesses:
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+def resolve_bmp_program(path):
+    if not path:
+        return ""
+    normalized = path.replace("\\", "/")
+    if normalized.lower().endswith(".elf"):
+        return normalized
+    if normalized.lower().endswith(".bin"):
+        elf_path = normalized[:-4] + ".elf"
+        if os.path.isfile(elf_path):
+            return elf_path
+    return ""
 
 
 # Create the main window
@@ -71,6 +109,8 @@ label3 = tk.Label(root, text="Port:")
 label3.grid(row=3, column=0)
 label4 = tk.Label(root, text="Password:")
 label4.grid(row=4, column=0)
+label5 = tk.Label(root, text="BMP port:")
+label5.grid(row=5, column=0)
 
 # Create the text fields
 entry1 = tk.Entry(root, width=30)
@@ -85,6 +125,9 @@ entry3.insert(0, port)
 entry4 = tk.Entry(root, show="*", width=30)
 entry4.grid(row=4, column=1)
 entry4.insert(0, auth)
+entry5 = tk.Entry(root, width=30)
+entry5.grid(row=5, column=1)
+entry5.insert(0, bmp_port)
 
 # Create the browse button, starting from the current directory, hide prefix path and only show the location of the file from current directory
 def browse():
@@ -133,6 +176,57 @@ def usb_upload():
 
 usb_button = tk.Button(root, text="USB Upload", command=usb_upload, width=10)
 usb_button.grid(row=3, column=3, padx=10, pady=3)
+
+
+def bmp_upload():
+    selected_bmp_port = entry5.get().strip()
+    target_index = bmp_target.strip() if bmp_target.strip() else "1"
+
+    if (not file_path):
+        PRINT_STDOUT("Error: Please select a firmware file\n")
+        return
+    if (not selected_bmp_port):
+        PRINT_STDOUT("Error: Please enter the BMP port\n")
+        return
+
+    elf_file = resolve_bmp_program(file_path)
+    if not elf_file:
+        PRINT_STDOUT("Error: BMP upload requires an ELF file or a matching .elf next to the selected .bin\n")
+        return
+
+    gdb_path = find_arm_gdb()
+    if not gdb_path:
+        PRINT_STDOUT("Error: arm-none-eabi-gdb not found\n")
+        return
+
+    env_write("TEMP_BMP_PORT", selected_bmp_port)
+    env_write("TEMP_BMP_TARGET", target_index)
+
+    command_pipe = [
+        gdb_path,
+        "-nx",
+        "--batch",
+        "-ex", f"target extended-remote {selected_bmp_port}",
+        "-ex", "monitor swdp_scan",
+        "-ex", f"attach {target_index}",
+        "-ex", "load",
+        "-ex", "compare-sections",
+        "-ex", "kill",
+        elf_file,
+    ]
+
+    process = Popen(command_pipe, stdout=PIPE, stderr=STDOUT, universal_newlines=True)
+
+    while True:
+        output = process.stdout.readline()
+        if output == '' and process.poll() is not None:
+            break
+        if output:
+            PRINT_STDOUT(output)
+
+
+bmp_button = tk.Button(root, text="BMP Upload", command=bmp_upload, width=10)
+bmp_button.grid(row=5, column=3, padx=10, pady=3)
 
 # Create the ota_upload button
 def ota_upload(force=False):
@@ -186,14 +280,14 @@ def ota_upload(force=False):
 ota_button = tk.Button(root, text="OTA Upload", command=ota_upload, width=10)
 ota_button.grid(row=4, column=3, padx=10)
 ota_force_button = tk.Button(root, text="OTA Force", command=lambda: ota_upload(True), width=10)
-ota_force_button.grid(row=5, column=3, padx=10, pady=3)
+ota_force_button.grid(row=6, column=3, padx=10, pady=3)
 
 # Create the read-only console text field for the output
 # Margin 10, wrap text
 # height 10, width 80, font Consolas, size 6
 # row 5, column 0, columnspan 4
 text = tk.Text(root, wrap=tk.WORD, height=20, width=140, font=("Consolas", 8))
-text.grid(row=6, column=0, columnspan=4, padx=10, pady=10)
+text.grid(row=7, column=0, columnspan=4, padx=10, pady=10)
 # Make the text field read-only
 text.config(state=tk.DISABLED)
 
