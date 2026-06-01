@@ -53,6 +53,10 @@ void setup() {
     NOTA.onEnd([]() {
         Serial.println("\nOTA update complete!");
     });
+    NOTA.onPreApply([]() {
+        // Optional STM32 hook invoked after transfer succeeds and just before
+        // the library copies staged firmware into internal flash.
+    });
     NOTA.onError([](ota_error_t error) {
         Serial.printf("OTA Error: %d\n", error);
     });
@@ -183,6 +187,7 @@ All checks can be bypassed with `custom_nota_force = true` or `--force` on the C
 | `onRequest(callback)` | Called when OTA connection begins |
 | `onStart(callback)` | Called when update transfer starts |
 | `onEnd(callback)` | Called when update completes |
+| `onPreApply(callback)` | STM32-only hook called just before staged firmware is applied to internal flash |
 | `onError(callback)` | Called on error (receives `ota_error_t`) |
 | `onProgress(callback)` | Called during transfer (current, total) |
 | `getCommand()` | Returns update type: `U_FLASH` or `U_FS` |

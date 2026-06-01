@@ -20,10 +20,23 @@ uint32_t program_memory_address = 0x08000000;
 // External SPI-flash OTA backend
 // Requires: SPIMemory library, and an SPIFlash instance named `flash` plus
 // a bool `flash_initialized` and spi_select(SPI_Flash/SPI_None) in scope
-// (provided by xtp_flash.h or equivalent).
+// (provided by host firmware code), plus SPI/CS register metadata for the
+// RAM-resident apply step.
 // ============================================================================
 
 #include <SPIMemory.h>
+
+#ifndef NOTA_EXT_FLASH_SPI_BASE
+#error "Define NOTA_EXT_FLASH_SPI_BASE to the SPI peripheral base address when NOTA_EXT_FLASH_OTA=1"
+#endif
+
+#ifndef NOTA_EXT_FLASH_CS_GPIO_BASE
+#error "Define NOTA_EXT_FLASH_CS_GPIO_BASE to the chip-select GPIO port base address when NOTA_EXT_FLASH_OTA=1"
+#endif
+
+#ifndef NOTA_EXT_FLASH_CS_MASK
+#error "Define NOTA_EXT_FLASH_CS_MASK to the chip-select GPIO bit mask when NOTA_EXT_FLASH_OTA=1"
+#endif
 
 #ifndef NOTA_EXT_FLASH_OTA_ADDRESS
 #define NOTA_EXT_FLASH_OTA_ADDRESS 0x00010000UL
@@ -197,9 +210,16 @@ struct OTAStorage {
     }
 
     void apply() {
-        digitalWrite(FLASH_CS_pin, HIGH);
+        release_flash();
         noInterrupts();
-        copy_flash_pages_from_spi_nota(program_memory_address, (uintptr_t) SPI2, (uintptr_t) GPIOC, (1UL << 6), program_ota_address, staged_size, true);
+        copy_flash_pages_from_spi_nota(
+            program_memory_address,
+            NOTA_EXT_FLASH_SPI_BASE,
+            NOTA_EXT_FLASH_CS_GPIO_BASE,
+            NOTA_EXT_FLASH_CS_MASK,
+            program_ota_address,
+            staged_size,
+            true);
     }
 } InternalStorage;
 
@@ -454,12 +474,9 @@ struct OTAStorage {
             uint32_t sector = ota_sector + s;
             Serial.printf("[FLASH] Erasing sector %lu (from RAM) ...\n", sector);
             Serial.flush();
-            IWatchdog.reload();
 
             // Call the RAM-resident erase — CPU will NOT stall
             int result = _flash_erase_sector_ram(sector, FLASH_VOLTAGE_RANGE_3);
-
-            IWatchdog.reload();
 
             if (result != 0) {
                 Serial.printf("[FLASH] Sector %lu FAILED: SR=0x%08X\n", sector, result);

@@ -31,6 +31,7 @@
 #elif defined(ARDUINO_ARCH_STM32)
 // Use the Ethernet library for STM32 with ArduinoOTA
 #include <Ethernet.h>
+#include <utility/w5100.h>
 
 #define UPDATE_ERROR_OK                 (0)
 #define UPDATE_ERROR_WRITE              (1)
@@ -138,6 +139,9 @@ public:
     //This callback will be called when OTA has finished
     void onEnd(THandlerFunction fn);
 
+    //This callback will be called just before the STM32 apply phase starts
+    void onPreApply(THandlerFunction fn);
+
     //This callback will be called when OTA encountered Error
     void onError(THandlerFunction_Error fn);
 
@@ -198,6 +202,7 @@ private:
     THandlerFunction _request_callback = nullptr;
     THandlerFunction _start_callback = nullptr;
     THandlerFunction _end_callback = nullptr;
+    THandlerFunction _pre_apply_callback = nullptr;
     THandlerFunction_Error _error_callback = nullptr;
     THandlerFunction_Progress _progress_callback = nullptr;
 };
@@ -290,11 +295,28 @@ String MD5(long ms) { return MD5(String(ms)); }
 NOTAClass::NOTAClass() {}
 
 NOTAClass::~NOTAClass() {
+#ifdef NOTA_BROADCAST
+    udp_mc.stop();
+    udp_b.stop();
+#endif
     if (_tcp_ota) {
         delete _tcp_ota;
         _tcp_ota = 0;
     }
 }
+
+#ifdef ARDUINO_ARCH_STM32
+static void nota_close_tcp_sockets_on_port(uint16_t port) {
+    if (!port) return;
+    for (uint8_t sock = 0; sock < MAX_SOCK_NUM; sock++) {
+        uint8_t status = W5100.readSnSR(sock);
+        if (status != SnSR::CLOSED && status != SnSR::UDP && W5100.readSnPORT(sock) == port) {
+            W5100.execCmdSn(sock, Sock_CLOSE);
+            W5100.writeSnIR(sock, 0xFF);
+        }
+    }
+}
+#endif
 
 // void NOTAClass::setLogger(TLogFunction_Out fn) { _logger = fn; }
 
@@ -310,6 +332,7 @@ NOTAClass::~NOTAClass() {
 void NOTAClass::onRequest(THandlerFunction fn) { _request_callback = fn; }
 void NOTAClass::onStart(THandlerFunction fn) { _start_callback = fn; }
 void NOTAClass::onEnd(THandlerFunction fn) { _end_callback = fn; }
+void NOTAClass::onPreApply(THandlerFunction fn) { _pre_apply_callback = fn; }
 void NOTAClass::onProgress(THandlerFunction_Progress fn) { _progress_callback = fn; }
 void NOTAClass::onError(THandlerFunction_Error fn) { _error_callback = fn; }
 void NOTAClass::setPort(uint16_t port) { if (!_initialized && !_port && port) _port = port; }
@@ -329,6 +352,19 @@ void NOTAClass::setPassword(const char* password) {
 }
 
 void NOTAClass::reconnect() {
+#ifdef NOTA_BROADCAST
+    udp_mc.stop();
+    udp_b.stop();
+#endif
+#ifdef ARDUINO_ARCH_STM32
+    uint16_t port = _port ? _port : 3232;
+    nota_close_tcp_sockets_on_port(port);
+#endif
+    ota_client = nullptr;
+    if (_tcp_ota) {
+        delete _tcp_ota;
+        _tcp_ota = 0;
+    }
     this->_initialized = false; // Reset initialization state
     this->begin();
 }
@@ -354,6 +390,7 @@ void NOTAClass::begin() {
         _tcp_ota = 0;
     }
 #ifdef ARDUINO_ARCH_STM32
+    nota_close_tcp_sockets_on_port(_port);
     _tcp_ota = new EthernetServer(_port);
     _tcp_ota->begin();
 #else // ESP8266/ESP32
@@ -368,6 +405,8 @@ void NOTAClass::begin() {
     Serial.printf("OTA server at: %s.local:%u\n", _hostname.c_str(), _port);
 #endif // ARDUINO_ARCH_STM32
 #ifdef NOTA_BROADCAST
+    udp_mc.stop();
+    udp_b.stop();
 #if defined(ARDUINO_ARCH_STM32)
     bool mc_ok = udp_mc.beginMulticast(NOTA_BC_DISCOVERY_GROUP, NOTA_BC_DISCOVERY_PORT) == 1;
     bool b_ok = udp_b.begin(NOTA_BC_DISCOVERY_PORT) == 1;
@@ -534,13 +573,7 @@ void NOTAClass::ota_handle_update() {
     // any ISR executing from flash during erase/write will hard-fault.
     if (_request_callback) _request_callback();
     if (_start_callback) _start_callback();
-    Serial.println("[OTA] Erasing flash...");
-    Serial.flush();
-    IWatchdog.reload();
     int ota_open_error = InternalStorage.open(_size);
-    IWatchdog.reload();
-    Serial.println("[OTA] Flash erase done");
-    Serial.flush();
     if (ota_open_error > 0) {
 #endif
         Serial.println("Update Begin Error");
@@ -703,6 +736,7 @@ void NOTAClass::ota_handle_update() {
         delay(100);
         Serial.printf("Update Success\n");
 #ifdef ARDUINO_ARCH_STM32
+        if (_pre_apply_callback) _pre_apply_callback();
         InternalStorage.apply();
 #endif
         if (_rebootOnSuccess) {

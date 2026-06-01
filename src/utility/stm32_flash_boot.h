@@ -28,6 +28,9 @@ extern "C" {
 __attribute__ ((long_call, noinline, section (".RamFunc*")))
 void copy_flash_pages_nota(uint32_t flash_offs, const uint8_t *data, uint32_t count, uint8_t reset);
 
+__attribute__ ((long_call, noinline, section (".RamFunc*")))
+void copy_flash_pages_from_spi_nota(uint32_t flash_offs, uintptr_t spi_base, uintptr_t cs_gpio_base, uint32_t cs_mask, uint32_t spi_flash_address, uint32_t count, uint8_t reset);
+
 #ifdef __cplusplus
 }
 #endif
