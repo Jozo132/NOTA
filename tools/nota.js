@@ -91,6 +91,7 @@
     const AUTH = 200
     const TEST = 201
     const total_bars = 40
+    const NOTA_FLASH_IMAGE_VALIDATOR_PREFIX = 'NOTA_IMAGE_VALIDATOR:'
 
     const supported_versions = ['0.0.2', '0.0.3', '0.0.4']
 
@@ -104,17 +105,29 @@
     const port = argv.p || argv.port || DEFAULT_PORT
     const auth = argv.a || argv.auth || ''
     const image = argv.f || argv.file || ''
+    const validator_raw = argv.v || argv.validator || ''
     const command = (argv.s || argv.spiffs || false) ? SPIFFS : FLASH
     const debug = !!(argv.d || argv.debug || false)
     const ts = !!(argv.t || argv.timestamp || false)
     const force = argv.force || false
     const test = argv.test || false
+    const validator = typeof validator_raw === 'string' ? validator_raw.trim() : ''
+    const validator_marker = validator ? `${NOTA_FLASH_IMAGE_VALIDATOR_PREFIX}${validator}` : ''
 
     const upload = !test
 
     if (!host) throw new Error('Missing parameter [-i] / [--ip] for the target IP address.')
     if (upload && !image) throw new Error('Missing parameter [-f] / [--file] for the binary image file.')
     if (upload && !fs.existsSync(image)) throw new Error(`File ${JSON.stringify(image)} does not exist.`)
+    if (validator && !/^[\x20-\x7E]+$/.test(validator)) throw new Error(`Flash image validator must be plain ASCII: ${JSON.stringify(validator)}`)
+
+    /** @param { Buffer } file_content @param { string } filename */
+    const validateFlashImage = (file_content, filename) => {
+        if (!validator_marker || command !== FLASH || !file_content.length) return
+        if (!file_content.includes(Buffer.from(validator_marker, 'ascii'))) {
+            throw new Error(`Refusing flash upload: binary ${JSON.stringify(filename)} does not contain the required NOTA image validator ${JSON.stringify(validator_marker)}. The wrong .bin file was most likely provided.`)
+        }
+    }
 
     /** 
      * @param { { host: String, port: Number, debug?: Boolean} } remote_address
@@ -267,8 +280,10 @@
             filename = binfile
         }
         const file_content = upload && fs.readFileSync(filename, { encoding: null }) || Buffer.from('')
+        validateFlashImage(file_content, filename)
         const content_size = file_content.length
         const file_md5 = await md5(file_content)
+        if (upload && validator_marker && command === FLASH) println(`${timestamp(ts)}Validated flash image marker ${JSON.stringify(validator_marker)}`)
         if (upload) println(`${timestamp(ts)}Sending OTA ${command === SPIFFS ? 'SPIFFS' : 'Flash'} update request to ${host}:${port}`)
         else println(`${timestamp(ts)}Testing OTA ${command === SPIFFS ? 'SPIFFS' : 'Flash'} on ${host}:${port}`)
         const message = `${command} ${content_size} ${file_md5}\n`

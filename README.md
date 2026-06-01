@@ -33,6 +33,10 @@ Download or clone this repository into your Arduino `libraries/` folder.
 ### Firmware Side
 
 ```cpp
+#ifndef NOTA_FLASH_IMAGE_VALIDATOR
+#define NOTA_FLASH_IMAGE_VALIDATOR "my-project"
+#endif
+
 #include <NOTA.h>
 
 NOTAClass NOTA;
@@ -109,7 +113,7 @@ pio run -t nota-gui
 #### 3. Direct Node.js CLI
 
 ```bash
-node tools/nota.js -f firmware.bin -i 192.168.1.100 -p 8266 -a secret
+node tools/nota.js -f firmware.bin -i 192.168.1.100 -p 8266 -a secret --validator my-project
 ```
 
 ## PlatformIO Configuration
@@ -123,6 +127,7 @@ All options go in your `platformio.ini` under the environment section:
 | `custom_nota_auth` | No | — | OTA password (if device requires auth) |
 | `custom_nota_name` | No | Project folder name | Expected device name (safety check) |
 | `custom_nota_board` | No | PIO board ID | Expected board ID (safety check) |
+| `custom_nota_validator` | No | Project folder name | ASCII marker embedded into flash images and required by the uploader |
 | `custom_nota_force` | No | `false` | Skip name/board/version safety checks |
 
 ### Upload Button Override
@@ -158,8 +163,11 @@ The uploader verifies before uploading:
 - **NOTA version compatibility** — refuses incompatible protocol versions
 - **Device name** — confirms the target device matches expectations
 - **Board ID** — confirms the hardware type matches
+- **Flash image validator** — refuses flash uploads when the `.bin` does not contain the required embedded ASCII marker
 
 All checks can be bypassed with `custom_nota_force = true` or `--force` on the CLI.
+
+The flash image validator is not bypassed by `--force`. If the binary does not contain the expected marker, the upload is refused before any data is sent.
 
 ## Requirements
 

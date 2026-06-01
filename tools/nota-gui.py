@@ -40,6 +40,7 @@ _parser = argparse.ArgumentParser(add_help=False)
 _parser.add_argument("-f", "--file", dest="cli_file")
 _parser.add_argument("-n", "--name", dest="cli_name")
 _parser.add_argument("-b", "--board", dest="cli_board")
+_parser.add_argument("-v", "--validator", dest="cli_validator")
 _parser.add_argument("--bmp-port", dest="cli_bmp_port")
 _parser.add_argument("--bmp-target", dest="cli_bmp_target")
 _parser.add_argument("--gdb", dest="cli_gdb")
@@ -48,6 +49,13 @@ NAME = _args.cli_name if _args.cli_name else TITLE
 FILE_NAME = _args.cli_file if _args.cli_file else ""
 BOARD = _args.cli_board if _args.cli_board else ""
 GDB = _args.cli_gdb if _args.cli_gdb else ""
+
+
+def ascii_validator(value):
+    return "".join(ch if 32 <= ord(ch) <= 126 else "_" for ch in value).strip()
+
+
+VALIDATOR = ascii_validator(_args.cli_validator if _args.cli_validator else os.path.basename(os.path.dirname(script_dir)))
 
 
 ip = env_read("TEMP_OTA_IP")
@@ -260,6 +268,8 @@ def ota_upload(force=False):
     command_pipe.append("-n"); command_pipe.append(NAME)
     if BOARD and BOARD != "":
         command_pipe.append("-b"); command_pipe.append(BOARD)
+    if VALIDATOR:
+        command_pipe.append("--validator"); command_pipe.append(VALIDATOR)
     if force:
         command_pipe.append("--force")
 

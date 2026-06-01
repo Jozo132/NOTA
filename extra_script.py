@@ -9,6 +9,7 @@
 #   custom_nota_auth  = your_password       ; OTA password (optional)
 #   custom_nota_name  = my-device           ; Expected device name (optional)
 #   custom_nota_board = XTP14A6E            ; Expected board ID (optional)
+#   custom_nota_validator = my-project      ; Flash image validator marker (optional)
 #   custom_nota_force = false               ; Skip safety checks (optional)
 
 Import("env")
@@ -63,6 +64,42 @@ def _board_id():
     return board
 
 
+def _ascii_text(value, fallback="NOTA"):
+    sanitized = "".join(ch if 32 <= ord(ch) <= 126 else "_" for ch in value).strip()
+    return sanitized or fallback
+
+
+def _validator_name():
+    """Get the flash image validator string"""
+    validator = _opt("validator")
+    if not validator:
+        validator = os.path.basename(project_env.subst("$PROJECT_DIR"))
+    return _ascii_text(validator)
+
+
+def _has_cpp_define(name):
+    """Check if a preprocessor define is already present"""
+    defines = project_env.get("CPPDEFINES", [])
+    for entry in defines:
+        if isinstance(entry, str):
+            if entry == name or entry.startswith(name + "="):
+                return True
+        elif isinstance(entry, (tuple, list)) and entry and entry[0] == name:
+            return True
+    return False
+
+
+def _c_string_literal(value):
+    return '"%s"' % value.replace('\\', '\\\\').replace('"', '\\"')
+
+
+def _ensure_validator_define():
+    """Provide a default firmware marker unless the project set one already"""
+    if _has_cpp_define("NOTA_FLASH_IMAGE_VALIDATOR"):
+        return
+    project_env.AppendUnique(CPPDEFINES=[("NOTA_FLASH_IMAGE_VALIDATOR", _c_string_literal(_validator_name()))])
+
+
 def _check_node():
     """Verify Node.js is available"""
     try:
@@ -83,6 +120,7 @@ def _nota_upload(target, source, env):
     force = _opt("force", "false").lower() in ("true", "1", "yes")
     name = _project_name()
     board = _board_id()
+    validator = _validator_name()
 
     if not ip:
         sys.stderr.write(
@@ -119,6 +157,7 @@ def _nota_upload(target, source, env):
     cmd = ["node", nota_js, "-f", firmware, "-i", ip, "-p", port]
     if name:  cmd += ["-n", name]
     if board: cmd += ["-b", board]
+    if validator: cmd += ["--validator", validator]
     if auth:  cmd += ["-a", auth]
     if force: cmd.append("--force")
 
@@ -136,6 +175,7 @@ def _nota_gui_upload(target, source, env):
     firmware = _firmware_bin()
     name = _project_name()
     board = _board_id()
+    validator = _validator_name()
 
     if not os.path.isfile(firmware):
         sys.stderr.write("NOTA Error: Firmware binary not found: %s\n" % firmware)
@@ -148,6 +188,7 @@ def _nota_gui_upload(target, source, env):
     cmd = [python_exe, nota_gui_py, "-f", firmware]
     if name:  cmd += ["-n", name]
     if board: cmd += ["-b", board]
+    if validator: cmd += ["--validator", validator]
 
     print("NOTA >> Launching OTA GUI...")
     ret = subprocess.call(cmd)
@@ -188,6 +229,9 @@ def _has_tkinter(python_path):
         return ret == 0
     except Exception:
         return False
+
+
+_ensure_validator_define()
 
 
 # ── Register custom PlatformIO targets ────────────────────────────────────────
@@ -233,10 +277,12 @@ if upload_protocol == "custom" and _opt("ip"):
     force = _opt("force", "false").lower() in ("true", "1", "yes")
     name = _project_name()
     board = _board_id()
+    validator = _validator_name()
 
     cmd_parts = ['"node"', '"%s"' % nota_js, '-f', '"$SOURCE"', '-i', ip, '-p', port]
     if name:  cmd_parts += ['-n', '"%s"' % name]
     if board: cmd_parts += ['-b', '"%s"' % board]
+    if validator: cmd_parts += ['--validator', '"%s"' % validator]
     if auth:  cmd_parts += ['-a', '"%s"' % auth]
     if force: cmd_parts.append('--force')
 

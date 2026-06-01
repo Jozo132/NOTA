@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include "./MD5.h"
+#include <string.h>
 #include <stdarg.h>
 
 #if defined(ESP8266) || defined(ESP32) || defined(ARDUINO_ARCH_ESP8266) || defined(ARDUINO_ARCH_ESP32)
@@ -63,6 +64,19 @@
 
 #define NOTA_VERSION "0.0.4"
 
+#ifndef NOTA_FLASH_IMAGE_VALIDATOR_PREFIX
+#define NOTA_FLASH_IMAGE_VALIDATOR_PREFIX "NOTA_IMAGE_VALIDATOR:"
+#endif
+
+#ifndef NOTA_FLASH_IMAGE_VALIDATOR
+#define NOTA_FLASH_IMAGE_VALIDATOR "NOTA"
+#endif
+
+#define NOTA_FLASH_IMAGE_VALIDATOR_MARKER NOTA_FLASH_IMAGE_VALIDATOR_PREFIX NOTA_FLASH_IMAGE_VALIDATOR
+
+static const char nota_flash_image_validator_storage[] __attribute__((used)) = NOTA_FLASH_IMAGE_VALIDATOR_MARKER;
+static const char* const nota_flash_image_validator = nota_flash_image_validator_storage;
+
 #ifndef NOTA_TCP_CHUNK_SIZE
 #define NOTA_TCP_CHUNK_SIZE 2048U
 #endif
@@ -120,6 +134,8 @@ public:
     //Sets the version string. Default "0.0.0"
     void setVersion(const char* version);
     String getVersion();
+
+    const char* getImageValidator();
 
     //Sets the password that will be required for OTA. Default NULL
     void setPassword(const char* password);
@@ -292,6 +308,23 @@ String MD5(const char* text) {
 String MD5(const String& text) { return MD5(text.c_str()); }
 String MD5(long ms) { return MD5(String(ms)); }
 
+static bool nota_validator_should_check(int cmd) {
+    return cmd == U_FLASH && nota_flash_image_validator[0] != '\0';
+}
+
+static void nota_validator_push_byte(uint8_t b, char* window, size_t window_size, size_t& window_len, bool& found) {
+    if (found || window_size == 0) return;
+    if (window_len < window_size) {
+        window[window_len++] = (char) b;
+    } else {
+        memmove(window, window + 1, window_size - 1);
+        window[window_size - 1] = (char) b;
+    }
+    if (window_len == window_size && memcmp(window, nota_flash_image_validator_storage, window_size) == 0) {
+        found = true;
+    }
+}
+
 NOTAClass::NOTAClass() {}
 
 NOTAClass::~NOTAClass() {
@@ -345,6 +378,7 @@ void NOTAClass::setBoard(const char* board) { if (board && _board.length() == 0)
 String NOTAClass::getBoard() { return _board; }
 void NOTAClass::setVersion(const char* version) { if (version && _version.length() == 0) _version = version; }
 String NOTAClass::getVersion() { return _version; }
+const char* NOTAClass::getImageValidator() { return nota_flash_image_validator; }
 void NOTAClass::setPassword(const char* password) {
     if (!_initialized && !_password.length() && password) {
         _password = MD5(password);
@@ -650,6 +684,10 @@ void NOTAClass::ota_handle_update() {
     uint32_t written = 0;
     uint32_t total = 0;
     int waited = 1000;
+    const bool require_image_validator = nota_validator_should_check(_cmd);
+    char validator_window[sizeof(nota_flash_image_validator_storage)] = { 0 };
+    size_t validator_window_len = 0;
+    bool image_validator_found = !require_image_validator;
 #ifdef ESP
     while (_state == OTA_RUNUPDATE && !Update.isFinished() && (ota_client->connected() || ota_client->available())) {
 #else
@@ -687,6 +725,7 @@ void NOTAClass::ota_handle_update() {
             }
             waited = 1000;
             uint8_t b = ota_client->read();
+            nota_validator_push_byte(b, validator_window, sizeof(nota_flash_image_validator_storage) - 1, validator_window_len, image_validator_found);
             if (!InternalStorage.write(b)) {
                 Serial.printf("\nReceive Failed: InternalStorage.write\n");
                 if (_error_callback) _error_callback(OTA_RECEIVE_ERROR);
@@ -718,7 +757,17 @@ void NOTAClass::ota_handle_update() {
 #ifdef ESP
     if (Update.end()) {
 #else
-    if (valid && _state == OTA_RUNUPDATE && total == (uint32_t) _size && InternalStorage.close()) {
+    bool storage_closed = false;
+    if (valid && _state == OTA_RUNUPDATE && total == (uint32_t) _size) {
+        storage_closed = InternalStorage.close();
+        if (storage_closed && require_image_validator && !image_validator_found) {
+            Serial.printf("Update refused: flash image validator \"%s\" not found in staged firmware\n", nota_flash_image_validator);
+            ota_client->printf("ERR:VALIDATOR %s", nota_flash_image_validator);
+            if (_error_callback) _error_callback(OTA_END_ERROR);
+            valid = false;
+        }
+    }
+    if (valid && _state == OTA_RUNUPDATE && total == (uint32_t) _size && storage_closed) {
 #endif
         Serial.printf("Update Success: %u\n", total);
 
