@@ -30,9 +30,13 @@
 #include <WiFiUdp.h>
 // ARDUINO_ARCH_STM32
 #elif defined(ARDUINO_ARCH_STM32)
+#ifdef NOTA_XTP_LWIP
+#include "xtp_lwip_compat.h"
+#else
 // Use the Ethernet library for STM32 with ArduinoOTA
 #include <Ethernet.h>
 #include <utility/w5100.h>
+#endif
 
 #define UPDATE_ERROR_OK                 (0)
 #define UPDATE_ERROR_WRITE              (1)
@@ -199,8 +203,13 @@ private:
     String _board = "";
     String _nonce;
 #ifdef ARDUINO_ARCH_STM32
+#ifdef NOTA_XTP_LWIP
+    xtp_lwip::TcpServer* _tcp_ota = nullptr;
+    xtp_lwip::TcpClient* ota_client = nullptr;
+#else
     EthernetServer* _tcp_ota = nullptr;
     EthernetClient* ota_client = nullptr;
+#endif
 #else
     WiFiServer* _tcp_ota = nullptr;
     WiFiClient* ota_client = nullptr;
@@ -259,7 +268,11 @@ extern "C" {
 
 #elif defined(ARDUINO_ARCH_STM32)
 #include <functional>
+#ifdef NOTA_XTP_LWIP
+#include "xtp_lwip_compat.h"
+#else
 #include <Ethernet.h>
+#endif
 //#include <ArduinoOTA.h>
 
 #endif
@@ -338,7 +351,7 @@ NOTAClass::~NOTAClass() {
     }
 }
 
-#ifdef ARDUINO_ARCH_STM32
+#if defined(ARDUINO_ARCH_STM32) && !defined(NOTA_XTP_LWIP)
 static void nota_close_tcp_sockets_on_port(uint16_t port) {
     if (!port) return;
     for (uint8_t sock = 0; sock < MAX_SOCK_NUM; sock++) {
@@ -390,7 +403,7 @@ void NOTAClass::reconnect() {
     udp_mc.stop();
     udp_b.stop();
 #endif
-#ifdef ARDUINO_ARCH_STM32
+#if defined(ARDUINO_ARCH_STM32) && !defined(NOTA_XTP_LWIP)
     uint16_t port = _port ? _port : 3232;
     nota_close_tcp_sockets_on_port(port);
 #endif
@@ -423,10 +436,18 @@ void NOTAClass::begin() {
         delete _tcp_ota;
         _tcp_ota = 0;
     }
-#ifdef ARDUINO_ARCH_STM32
+#if defined(ARDUINO_ARCH_STM32) && !defined(NOTA_XTP_LWIP)
     nota_close_tcp_sockets_on_port(_port);
     _tcp_ota = new EthernetServer(_port);
     _tcp_ota->begin();
+#elif defined(ARDUINO_ARCH_STM32)
+    _tcp_ota = new xtp_lwip::TcpServer();
+    if (!_tcp_ota->begin(_port)) {
+        delete _tcp_ota;
+        _tcp_ota = nullptr;
+        Serial.printf("OTA server failed on port %u\n", _port);
+        return;
+    }
 #else // ESP8266/ESP32
     _tcp_ota = new WiFiServer(_port);
     _tcp_ota->begin(_port);
@@ -941,16 +962,26 @@ void NOTAClass::listener() {
         _state = OTA_IDLE;
         Serial.println("OTA Update timeout");
     }
+#ifdef NOTA_XTP_LWIP
+    auto* client = _tcp_ota->available();
+    if (client == nullptr || !client->available()) return;
+#else
     auto client = _tcp_ota->available();
     if (!client.available()) return;
+#endif
     delay(10);
     // Check if data is available
+#ifdef NOTA_XTP_LWIP
+    ota_client = client;
+    Serial.println("OTA client connected");
+#else
     ota_client = &client;
 #ifdef ESP
     Serial.printf("Client with IP %s connected\n", client.remoteIP().toString().c_str());
 #else 
     IPAddress ip = client.remoteIP();
     Serial.printf("Client with IP %d.%d.%d.%d connected\n", ip[0], ip[1], ip[2], ip[3]);
+#endif
 #endif
     if (_state == OTA_IDLE) ota_handle_idle();
     if (_state == OTA_WAITAUTH) ota_handle_auth();

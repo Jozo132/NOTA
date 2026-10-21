@@ -4,7 +4,7 @@
 #include "stm32_flash_boot.h"
 
 // Define NOTA_EXT_FLASH_OTA=1 (e.g. in platformio.ini build_flags) to stage OTA firmware
-// on an external SPI flash chip via SPIMemory library. This allows full MCU flash updates
+// on an external SPI NOR flash chip. This allows full MCU flash updates
 // because the staging area is not limited to the upper half of internal flash.
 // Default (0): stage directly in the upper sectors of internal MCU flash (classic approach,
 // firmware size limited to ~half of internal flash).
@@ -18,13 +18,11 @@ uint32_t program_memory_address = 0x08000000;
 
 // ============================================================================
 // External SPI-flash OTA backend
-// Requires: SPIMemory library, and an SPIFlash instance named `flash` plus
+// Requires: an SPI NOR flash instance named `flash` plus
 // a bool `flash_initialized` and spi_select(SPI_Flash/SPI_None) in scope
 // (provided by host firmware code), plus SPI/CS register metadata for the
 // RAM-resident apply step.
 // ============================================================================
-
-#include <SPIMemory.h>
 
 #ifndef NOTA_EXT_FLASH_SPI_BASE
 #error "Define NOTA_EXT_FLASH_SPI_BASE to the SPI peripheral base address when NOTA_EXT_FLASH_OTA=1"
@@ -129,8 +127,8 @@ struct OTAStorage {
         release_flash();
         if (size > flash_capacity) return 0xFFFFFFFFUL;
         // Align down to page boundary so every flush_page() write is page-aligned.
-        // Without this, the first write starts mid-page and SPIMemory wraps within the
-        // same page, corrupting data.
+        // Without this, the first write starts mid-page and a NOR page program wraps
+        // within the same page, corrupting data.
         uint32_t ota_address = align_down(flash_capacity - size, NOTA_EXT_FLASH_PAGE_SIZE);
         if (ota_address < NOTA_EXT_FLASH_OTA_ADDRESS) return 0xFFFFFFFFUL;
         return ota_address;
@@ -172,9 +170,7 @@ struct OTAStorage {
     }
 
     bool erase() {
-        // SPIMemory 3.4.0 eraseSection() never advances _currentAddress between block-erase
-        // iterations, so only the first 64 KB of the staging region ever gets erased.
-        // Iterate eraseSector() (4 KB each) manually to cover the full window.
+        // Iterate eraseSector() (4 KB each) manually to cover the full staging window.
         select_flash();
         bool ok = true;
         for (uint32_t addr = erase_start; addr < erase_start + erase_size && ok; addr += NOTA_EXT_FLASH_ERASE_SIZE) {

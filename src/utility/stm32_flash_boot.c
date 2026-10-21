@@ -33,6 +33,9 @@
 #include <stm32f7xx.h>
 #define SMALL_SECTOR_SIZE 0x8000 // sectors 0 to 3
 #define LARGE_SECTOR_SIZE 0x40000 // from sector 5
+#elif defined(STM32H723xx)
+#include <stm32h7xx.h>
+#define NOTA_STM32H7
 #endif
 
 #if defined(STM32F2xx) || defined(STM32F4xx)
@@ -41,29 +44,49 @@
 #endif
 
 static inline __attribute__ ((always_inline)) void nota_wait_flash_ready(void) {
+#if defined(NOTA_STM32H7)
+  while (FLASH->SR1 & FLASH_SR_BSY);
+#else
   while (FLASH->SR & FLASH_SR_BSY);
+#endif
 }
 
 #define IWDG_KEY_RELOAD 0xAAAAU
 
 static inline __attribute__ ((always_inline)) void nota_iwdg_reload(void) {
+#if defined(NOTA_STM32H7)
+  IWDG1->KR = IWDG_KEY_RELOAD;
+#else
   IWDG->KR = IWDG_KEY_RELOAD;
+#endif
 }
 
 static inline __attribute__ ((always_inline)) void nota_prepare_flash_programming(void) {
+#if defined(NOTA_STM32H7)
+  SET_BIT(FLASH->CR1, FLASH_CR_PG);
+#else
 #ifdef FLASH_CR_PSIZE
   CLEAR_BIT(FLASH->CR, FLASH_CR_PSIZE);
   FLASH->CR |= 0x00000100U;
 #endif
   FLASH->CR |= FLASH_CR_PG;
+#endif
 }
 
 static inline __attribute__ ((always_inline)) void nota_finish_flash_programming(void) {
+#if defined(NOTA_STM32H7)
+  CLEAR_BIT(FLASH->CR1, FLASH_CR_PG);
+#else
   CLEAR_BIT(FLASH->CR, FLASH_CR_PG);
+#endif
 }
 
 static inline __attribute__ ((always_inline)) __attribute__((noreturn)) void nota_system_reset(void) {
+#if defined(NOTA_STM32H7)
+  FLASH->CR1 |= FLASH_CR_LOCK;
+#else
   FLASH->CR |= FLASH_CR_LOCK;
+#endif
   __DSB();
   SCB->AIRCR = (0x5FAUL << SCB_AIRCR_VECTKEY_Pos) | SCB_AIRCR_SYSRESETREQ_Msk;
   __DSB();
@@ -73,6 +96,21 @@ static inline __attribute__ ((always_inline)) __attribute__((noreturn)) void not
 }
 
 static inline __attribute__ ((always_inline)) void nota_erase_destination(uint32_t flash_offs, uint32_t count) {
+#if defined(NOTA_STM32H7)
+  const uint32_t sector_size = 0x20000U;
+  uint32_t start_sector = (flash_offs - FLASH_BASE) / sector_size;
+  uint32_t end_sector = (flash_offs - FLASH_BASE + count + sector_size - 1U) / sector_size;
+
+  for (uint32_t sector = start_sector; sector < end_sector; sector++) {
+    nota_iwdg_reload();
+    nota_wait_flash_ready();
+    FLASH->CCR1 = FLASH->SR1;
+    MODIFY_REG(FLASH->CR1, FLASH_CR_SNB, (sector << FLASH_CR_SNB_Pos));
+    SET_BIT(FLASH->CR1, FLASH_CR_SER | FLASH_CR_START);
+    nota_wait_flash_ready();
+  }
+  CLEAR_BIT(FLASH->CR1, FLASH_CR_SER | FLASH_CR_SNB);
+#else
   uint32_t page_address = flash_offs;
 
 #ifdef FLASH_PAGE_SIZE
@@ -104,33 +142,68 @@ static inline __attribute__ ((always_inline)) void nota_erase_destination(uint32
   }
   CLEAR_BIT(FLASH->CR, (FLASH_CR_SER | FLASH_CR_SNB));
 #endif
+#endif
 }
 
+#if defined(NOTA_STM32H7)
+static inline __attribute__ ((always_inline)) void nota_program_flash_word(uint32_t address, const uint8_t *data) {
+  const uint32_t *words = (const uint32_t *) data;
+  volatile uint32_t *destination = (volatile uint32_t *) address;
+
+  for (uint32_t index = 0; index < 8U; index++) {
+    destination[index] = words[index];
+  }
+  nota_wait_flash_ready();
+}
+#else
 static inline __attribute__ ((always_inline)) void nota_program_halfword(uint32_t address, uint16_t value) {
   *(volatile uint16_t*) address = value;
   nota_wait_flash_ready();
 }
+#endif
 
 static inline __attribute__ ((always_inline)) void nota_spi_wait_txe(SPI_TypeDef* spi) {
+#if defined(NOTA_STM32H7)
+  while (!(spi->SR & SPI_SR_TXP));
+#else
   while (!(spi->SR & SPI_SR_TXE));
+#endif
 }
 
 static inline __attribute__ ((always_inline)) void nota_spi_wait_rxne(SPI_TypeDef* spi) {
+#if defined(NOTA_STM32H7)
+  while (!(spi->SR & SPI_SR_RXP));
+#else
   while (!(spi->SR & SPI_SR_RXNE));
+#endif
 }
 
 static inline __attribute__ ((always_inline)) void nota_spi_drain_rx(SPI_TypeDef* spi) {
+#if defined(NOTA_STM32H7)
+  while (spi->SR & SPI_SR_RXP) {
+    (void) spi->RXDR;
+  }
+#else
   while (spi->SR & SPI_SR_RXNE) {
     (void) *((volatile uint8_t*) &spi->DR);
   }
   (void) spi->SR;
+#endif
 }
 
 static inline __attribute__ ((always_inline)) uint8_t nota_spi_transfer_byte(SPI_TypeDef* spi, uint8_t value) {
   nota_spi_wait_txe(spi);
+#if defined(NOTA_STM32H7)
+  *((volatile uint8_t *) &spi->TXDR) = value;
+#else
   *((volatile uint8_t*) &spi->DR) = value;
+#endif
   nota_spi_wait_rxne(spi);
+#if defined(NOTA_STM32H7)
+  return *((volatile uint8_t *) &spi->RXDR);
+#else
   return *((volatile uint8_t*) &spi->DR);
+#endif
 }
 
 static inline __attribute__ ((always_inline)) void nota_spi_select(GPIO_TypeDef* gpio, uint32_t mask) {
@@ -142,6 +215,37 @@ static inline __attribute__ ((always_inline)) void nota_spi_deselect(GPIO_TypeDe
 }
 
 void copy_flash_pages_nota(uint32_t flash_offs, const uint8_t *data, uint32_t count, uint8_t reset) {
+#if defined(NOTA_STM32H7)
+  if (flash_offs < FLASH_BASE || (flash_offs & 0x1FU) != 0U || count == 0U ||
+      ((uint64_t) flash_offs + count) > ((uint64_t) FLASH_BASE + 0x100000U)) {
+    return;
+  }
+
+  __disable_irq();
+  FLASH->KEYR1 = 0x45670123U;
+  FLASH->KEYR1 = 0xCDEF89ABU;
+  nota_erase_destination(flash_offs, count);
+  nota_prepare_flash_programming();
+
+  uint32_t address = flash_offs;
+  while (count) {
+    uint8_t flash_word[32];
+    uint32_t chunk = (count > sizeof(flash_word)) ? sizeof(flash_word) : count;
+    for (uint32_t index = 0; index < sizeof(flash_word); index++) {
+      flash_word[index] = (index < chunk) ? data[index] : 0xFFU;
+    }
+    nota_program_flash_word(address, flash_word);
+    address += sizeof(flash_word);
+    data += chunk;
+    count -= chunk;
+  }
+  nota_finish_flash_programming();
+
+  if (reset) {
+    nota_system_reset();
+  }
+  __enable_irq();
+#else
   uint32_t page_address = flash_offs;
   uint16_t* ptr = (uint16_t*) data;
 
@@ -170,6 +274,7 @@ void copy_flash_pages_nota(uint32_t flash_offs, const uint8_t *data, uint32_t co
   if (reset) {
     nota_system_reset();
   }
+#endif
 }
 
 void copy_flash_pages_from_spi_nota(uint32_t flash_offs, uintptr_t spi_base, uintptr_t cs_gpio_base, uint32_t cs_mask, uint32_t spi_flash_address, uint32_t count, uint8_t reset) {
@@ -179,6 +284,52 @@ void copy_flash_pages_from_spi_nota(uint32_t flash_offs, uintptr_t spi_base, uin
 
   nota_iwdg_reload();
 
+#if defined(NOTA_STM32H7)
+  if (flash_offs < FLASH_BASE || (flash_offs & 0x1FU) != 0U || count == 0U ||
+      ((uint64_t) flash_offs + count) > ((uint64_t) FLASH_BASE + 0x100000U)) {
+    return;
+  }
+
+  __disable_irq();
+  FLASH->KEYR1 = 0x45670123U;
+  FLASH->KEYR1 = 0xCDEF89ABU;
+  nota_erase_destination(flash_offs, count);
+  nota_iwdg_reload();
+
+  nota_spi_deselect(cs_gpio, cs_mask);
+  nota_spi_drain_rx(spi);
+  nota_spi_select(cs_gpio, cs_mask);
+  nota_spi_transfer_byte(spi, 0x03);
+  nota_spi_transfer_byte(spi, (spi_flash_address >> 16) & 0xFFU);
+  nota_spi_transfer_byte(spi, (spi_flash_address >> 8) & 0xFFU);
+  nota_spi_transfer_byte(spi, spi_flash_address & 0xFFU);
+
+  nota_prepare_flash_programming();
+  uint32_t progress = 0;
+  while (count) {
+    uint8_t flash_word[32];
+    uint32_t chunk = (count > sizeof(flash_word)) ? sizeof(flash_word) : count;
+    for (uint32_t index = 0; index < sizeof(flash_word); index++) {
+      flash_word[index] = (index < chunk) ? nota_spi_transfer_byte(spi, 0xFFU) : 0xFFU;
+    }
+    nota_program_flash_word(page_address, flash_word);
+    page_address += sizeof(flash_word);
+    count -= chunk;
+    progress += chunk;
+    if ((progress & 0x7FFFU) == 0U) {
+      nota_iwdg_reload();
+    }
+  }
+  nota_finish_flash_programming();
+  nota_spi_deselect(cs_gpio, cs_mask);
+  nota_iwdg_reload();
+
+  if (reset) {
+    nota_system_reset();
+  }
+  __enable_irq();
+  return;
+#else
   FLASH->KEYR = 0x45670123U;
   FLASH->KEYR = 0xCDEF89ABU;
 
@@ -222,6 +373,7 @@ void copy_flash_pages_from_spi_nota(uint32_t flash_offs, uintptr_t spi_base, uin
   if (reset) {
     nota_system_reset();
   }
+#endif
 }
 
 #endif
